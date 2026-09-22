@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/vutran1710/claudebox/internal/setuptool"
 )
@@ -29,7 +30,7 @@ func step(status, name, detail string) {
 	fmt.Printf("  %s %s\n", status, name)
 }
 
-func runSetup(t setuptool.Target, binary string, skipAuth, skipClaude bool) error {
+func runSetup(t setuptool.Target, binary string, skipAuth, skipClaude, withAPI bool) error {
 	fmt.Printf("\nProvisioning %s\n\n", t)
 
 	fmt.Println("Tools")
@@ -85,9 +86,15 @@ func runSetup(t setuptool.Target, binary string, skipAuth, skipClaude bool) erro
 	}
 
 	fmt.Println("\nConfig")
-	copied, dropped, err := setuptool.MigrateConfig(t)
+	copied, dropped, err := setuptool.MigrateConfig(t, setuptool.MigrateOptions{})
 	for _, c := range copied {
-		step(tick, c, "")
+		if c.Files == 0 {
+			// Reporting a tick here is how an empty directory once looked
+			// like a successful copy.
+			step(cross, c.Path, "nothing to copy")
+			continue
+		}
+		step(tick, c.Path, fmt.Sprintf("%d files", c.Files))
 	}
 	for _, d := range dropped {
 		step(skip, d.Path, "dropped — "+d.Reason)
@@ -97,7 +104,87 @@ func runSetup(t setuptool.Target, binary string, skipAuth, skipClaude bool) erro
 		return err
 	}
 
+	if withAPI {
+		fmt.Println("\nAPI")
+		if err := setuptool.UploadCommandSpec(t); err != nil {
+			step(cross, "commands.yaml", err.Error())
+			return err
+		}
+		step(tick, "commands.yaml", "~/.config/cbx/commands.yaml")
+		if err := setuptool.InstallAPI(t, setuptool.APIOptions{}); err != nil {
+			step(cross, "service", err.Error())
+			return err
+		}
+		step(tick, "service", "cbx-api, enabled and started")
+		key, err := setuptool.APIKey(t)
+		if err != nil {
+			step(cross, "key", err.Error())
+			return err
+		}
+		step(tick, "key", key)
+		fmt.Printf("\n  Reach it from here:\n\n    %s\n", setuptool.ForwardCommand(t, setuptool.DefaultAPIAddr))
+	}
+
 	fmt.Printf("\n%s ready. Start the master session:\n\n    ssh %s cbx new master\n\n", t, t)
+	return nil
+}
+
+// runAPI operates the API server on an already-provisioned box.
+func runAPI(t setuptool.Target, action string) error {
+	switch action {
+	case "install":
+		if err := setuptool.UploadCommandSpec(t); err != nil {
+			return err
+		}
+		if err := setuptool.InstallAPI(t, setuptool.APIOptions{}); err != nil {
+			return err
+		}
+		key, err := setuptool.APIKey(t)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("service\tcbx-api\n")
+		fmt.Printf("addr\thttp://%s\n", setuptool.DefaultAPIAddr)
+		fmt.Printf("key\t%s\n", key)
+		fmt.Printf("forward\t%s\n", setuptool.ForwardCommand(t, setuptool.DefaultAPIAddr))
+	case "key":
+		key, err := setuptool.APIKey(t)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("key\t%s\n", key)
+	case "rotate":
+		key, err := setuptool.RotateAPIKey(t)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("key\t%s\n", key)
+	case "forward":
+		fmt.Printf("forward\t%s\n", setuptool.ForwardCommand(t, setuptool.DefaultAPIAddr))
+	case "expose":
+		if err := setuptool.InstallTunnel(t, setuptool.DefaultAPIAddr); err != nil {
+			return err
+		}
+		url, err := setuptool.TunnelURL(t, 60*time.Second)
+		if err != nil {
+			return err
+		}
+		key, keyErr := setuptool.APIKey(t)
+		fmt.Printf("url\t%s\n", url)
+		if keyErr == nil {
+			fmt.Printf("key\t%s\n", key)
+		}
+		// Worth saying plainly: this is now on the internet.
+		fmt.Fprintln(os.Stderr, "note: the tunnel is public — the bearer key is the only thing protecting these sessions, and the URL changes whenever it restarts")
+	case "url":
+		url, err := setuptool.TunnelURL(t, 10*time.Second)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("url\t%s\n", url)
+	default:
+		return fmt.Errorf("unknown api command %q (install, key, rotate, forward, expose, url)", action)
+	}
 	return nil
 }
 
@@ -162,6 +249,22 @@ func runStatus(t setuptool.Target) error {
 		} else {
 			step(cross, tool.Name, "not authenticated")
 		}
+	}
+
+	fmt.Println("\nAPI")
+	if setuptool.APIRunning(t) {
+		step(tick, "cbx-api", "running on "+setuptool.DefaultAPIAddr)
+	} else {
+		step(cross, "cbx-api", "not running — `cbx-setuptool api install`")
+	}
+	if setuptool.TunnelRunning(t) {
+		if url, err := setuptool.TunnelURL(t, 5*time.Second); err == nil {
+			step(tick, "cbx-tunnel", url)
+		} else {
+			step(tick, "cbx-tunnel", "running, no URL in the journal yet")
+		}
+	} else {
+		step(skip, "cbx-tunnel", "not exposed — `cbx-setuptool api expose`")
 	}
 	fmt.Println()
 	return nil

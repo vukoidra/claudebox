@@ -9,6 +9,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vutran1710/claudebox/internal/setuptool"
@@ -40,7 +42,7 @@ is.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(setupCmd(), authCmd(), migrateCmd(), statusCmd())
+	root.AddCommand(setupCmd(), authCmd(), migrateCmd(), statusCmd(), apiCmd())
 	return root
 }
 
@@ -54,7 +56,7 @@ func target(host, user string) (setuptool.Target, error) {
 
 func setupCmd() *cobra.Command {
 	var host, user, binary string
-	var skipAuth, skipClaude bool
+	var skipAuth, skipClaude, withAPI bool
 
 	cmd := &cobra.Command{
 		Use:   "setup",
@@ -80,7 +82,7 @@ token path. Everything else can be answered from environment variables.`,
 			if err != nil {
 				return err
 			}
-			return runSetup(t, binary, skipAuth, skipClaude)
+			return runSetup(t, binary, skipAuth, skipClaude, withAPI)
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
@@ -88,6 +90,45 @@ token path. Everything else can be answered from environment variables.`,
 	cmd.Flags().StringVar(&binary, "binary", "", "Locally built linux cbx to install (GOOS=linux GOARCH=amd64)")
 	cmd.Flags().BoolVar(&skipAuth, "skip-auth", false, "Skip the CLI token prompts")
 	cmd.Flags().BoolVar(&skipClaude, "skip-claude-login", false, "Install everything but leave Claude Code signed out (sign in later with another setup run)")
+	cmd.Flags().BoolVar(&withAPI, "with-api", false, "Install and start the HTTP API as a systemd service")
+	return cmd
+}
+
+func apiCmd() *cobra.Command {
+	var host, user string
+	cmd := &cobra.Command{
+		Use:   "api <install|key|rotate|forward|expose|url>",
+		Short: "Manage the HTTP API on the box",
+		Long: `Installs or operates the API server.
+
+  install   write the systemd unit, start it, print the key
+  key       print the key the box currently accepts
+  rotate    issue a new key and restart the server onto it
+  forward   print the ssh command that reaches the API from here
+  expose    open a public HTTPS tunnel and print its URL
+  url       print the tunnel's current URL
+
+The API binds 127.0.0.1, so reaching it is a deliberate act. forward needs
+nothing installed and encrypts the hop, but only from a machine that can ssh
+to the box. expose installs a Cloudflare quick tunnel instead, which a phone
+or a Claude Project can reach — its hostname changes every time the tunnel
+restarts, and url reads the current one.
+
+Either way the bearer key is the only thing standing between the internet and
+these sessions.`,
+		Example: "  cbx-setuptool api install --host 203.0.113.9\n" +
+			"  cbx-setuptool api expose --host 203.0.113.9",
+		Args: cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			t, err := target(host, user)
+			if err != nil {
+				return err
+			}
+			return runAPI(t, args[0])
+		},
+	}
+	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
+	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
 	return cmd
 }
 
@@ -128,26 +169,51 @@ token path. Use setup for that.`,
 }
 
 func migrateCmd() *cobra.Command {
-	var host, user string
+	var host, user, claudeDir string
+	var filter []string
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Copy your local Claude config to the box",
-		Long: `Copies the parts of ~/.claude that shape a session: skills, agents,
-settings.json, and the plugin manifest.
+		Short: "Copy local Claude config to the box",
+		Long: `Copies the parts of a Claude configuration directory that shape a session.
+
+--claude-dir names the directory to copy from, defaulting to ~/.claude. It is
+a flag rather than a fixed path because a machine may keep more than one, and
+the one worth shipping to a box is not always the one Claude Code reads here.
+
+--filter names what to copy, relative to that directory. Entries may be
+directories or files. The default is:
+
+  skills, agents, rules, settings.json,
+  plugins/installed_plugins.json, plugins/known_marketplaces.json
 
 Not caches, not session transcripts, and not the plugin bundles themselves —
-the box re-fetches those from the manifest, which is a few kilobytes instead of
-a few hundred megabytes.`,
-		Example: "  cbx-setuptool migrate --host 203.0.113.9",
-		Args:    cobra.NoArgs,
+the box re-fetches those from the manifest, a few kilobytes instead of a few
+hundred megabytes.
+
+settings.json is rewritten on the way: home paths are remapped and hooks
+calling binaries the box lacks are dropped and reported.
+
+Symlinks are followed when they point at a file, so a configuration directory
+whose entries link into a dotfiles repository migrates rather than arriving
+empty. A symlink to a directory is reported, not followed.`,
+		Example: "  cbx-setuptool migrate --host 203.0.113.9\n" +
+			"  cbx-setuptool migrate --host 203.0.113.9 --filter skills,rules,agents\n" +
+			"  cbx-setuptool migrate --host 203.0.113.9 --claude-dir ~/dotfiles/claude",
+		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			t, err := target(host, user)
 			if err != nil {
 				return err
 			}
-			copied, dropped, err := setuptool.MigrateConfig(t)
+			dir, err := expandHome(claudeDir)
+			if err != nil {
+				return err
+			}
+			copied, dropped, err := setuptool.MigrateConfig(t, setuptool.MigrateOptions{
+				Dir: dir, Only: filter,
+			})
 			for _, c := range copied {
-				fmt.Printf("copied\t%s\n", c)
+				fmt.Printf("copied\t%s\t%d\n", c.Path, c.Files)
 			}
 			for _, d := range dropped {
 				fmt.Printf("dropped\t%s\t%s\n", d.Path, d.Reason)
@@ -157,7 +223,28 @@ a few hundred megabytes.`,
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
 	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
+	cmd.Flags().StringVar(&claudeDir, "claude-dir", "", "Local Claude directory to copy from (default ~/.claude)")
+	cmd.Flags().StringSliceVar(&filter, "filter", nil, "What to copy, comma-separated (default skills,agents,rules,settings.json,plugins manifest)")
 	return cmd
+}
+
+// expandHome resolves a leading ~ so --claude-dir ~/x works when a shell has
+// not already done it.
+func expandHome(path string) (string, error) {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if path == "~" {
+		return home, nil
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:]), nil
+	}
+	return path, nil
 }
 
 func statusCmd() *cobra.Command {

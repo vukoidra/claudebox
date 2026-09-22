@@ -9,6 +9,10 @@ Your own Claude Code agent, always on, reachable from your phone.
 A box in the cloud runs Claude Code sessions you can open from the Claude app —
 no laptop required, nothing to keep awake.
 
+<p align="center">
+  <img src="docs/architecture.svg" width="960" alt="cbx-setuptool provisions the box from a laptop. On the box, the cbx CLI creates interactive tmux sessions reached from a phone by Remote Control, while cbx serve exposes an HTTP API driving headless claude -p sessions. Both record state in one SQLite database." />
+</p>
+
 ## Two commands
 
 ClaudeBox is two binaries because it does two unrelated jobs.
@@ -63,7 +67,7 @@ rather than vanishing, and a Remote Control URL survives a tmux restart.
 ```
 cbx-setuptool setup   --host <ip> --binary <linux-cbx>   the whole flow
 cbx-setuptool auth    --host <ip> [github|vercel|supabase]
-cbx-setuptool migrate --host <ip>    push ~/.claude skills, agents, settings
+cbx-setuptool migrate --host <ip> [--claude-dir <dir>] [--filter a,b]
 cbx-setuptool status  --host <ip>    what is installed and authenticated
 ```
 
@@ -72,9 +76,18 @@ arguments, where they would be visible in the box's process table. A token
 already in your environment (`GH_TOKEN`, `VERCEL_TOKEN`,
 `SUPABASE_ACCESS_TOKEN`) is used without asking.
 
+`migrate` copies the parts of a Claude configuration directory that shape a
+session — by default `skills`, `agents`, `rules`, `settings.json` and the
+plugin manifest. `--claude-dir` picks which directory to copy from, and
+`--filter` picks what inside it travels, so neither is fixed.
+
 `settings.json` is rewritten on the way: paths under your home directory are
 remapped, and hooks calling binaries the box does not have are dropped and
 reported. Copied verbatim they would fail on every edit inside every session.
+
+Each entry is reported with the number of files it actually sent, because a
+directory of symlinks into a dotfiles repository once migrated as empty and
+was reported as copied.
 
 ## Testing
 
@@ -91,4 +104,5 @@ this project was found by running against a real box.
 ## Docs
 
 - [docs/two-binaries.md](docs/two-binaries.md) — why the split
+- [docs/api-server.md](docs/api-server.md) — the API server, and why it is not `cbx serve` returning
 - [docs/decision-log.md](docs/decision-log.md) — choices made, why, and what would make each wrong
