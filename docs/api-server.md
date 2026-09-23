@@ -107,6 +107,9 @@ POST   /sessions/{name}/command          {command, respond_within?} → declared
 
 PUT    /sessions/{name}/system-prompt    {prompt}
 PUT    /sessions/{name}/skills/{skill}   SKILL.md body
+
+GET    /sessions/{name}/artifacts        what it may hand back
+GET    /sessions/{name}/artifacts/{path} fetch one
 ```
 
 ### Opening an existing session needs no state
@@ -347,6 +350,43 @@ Two things the spec still cannot catch, so the server checks them anyway:
   codeword afterwards and getting it back. That is why it is `rotate-session`
   and not `forward`: cbx allocates a new conversation id and resets `turns`, and
   the history is genuinely gone from the session's point of view.
+
+### Getting work back out
+
+A session writes its output into its own directory, and a caller needs to
+fetch it. What a caller must not get is everything else in there — a cloned
+repository, scratch files, a stray `.env`, whatever a turn happened to write.
+
+So the fetchable set is **declared, not discovered**. A query names the files
+it expects to produce; when it finishes, those that exist are registered and
+become fetchable. Nothing else ever is.
+
+```
+POST /sessions/x/query   { prompt, respond_within, artifacts: ["report.html"] }
+GET  /sessions/x/artifacts                → the register
+GET  /sessions/x/artifacts/report.html    → the bytes
+```
+
+This is the same deny-by-default the command allowlist uses, for the same
+reason: the alternative is a boundary that holds only while everyone behaves.
+Confining reads to the session directory is not enough when the directory is a
+cloned repository.
+
+Declared paths are validated **before** the turn runs, so a typo costs a round
+trip rather than a report. A declared file the turn never wrote is simply not
+registered — absent from the listing rather than a fetch that fails.
+
+Registrations expire after four hours. **The register expires, not the file:**
+deleting what a session wrote on a timer would contradict `DELETE` keeping the
+working directory, and the data is still reachable over ssh.
+
+Never declared, expired, and no longer on disk all answer `404` alike. A
+caller learns what it may fetch from the register, not by probing the
+filesystem.
+
+Containment is checked twice — once when a path is declared, and again on
+every fetch, because a symlink planted after registration would otherwise turn
+a registered path into a way out.
 
 ### Jobs are rows, and a janitor sweeps them
 

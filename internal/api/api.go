@@ -48,7 +48,10 @@ type Server struct {
 	SpecPath string
 	Home     string
 	JobTTL   time.Duration
-	Version  string
+	// ArtifactTTL is how long a declared output stays fetchable; zero means
+	// DefaultArtifactTTL.
+	ArtifactTTL time.Duration
+	Version     string
 
 	// now is injected for tests; nothing in production replaces it.
 	now func() time.Time
@@ -116,6 +119,9 @@ func (s *Server) routes() []route {
 		{"PUT /sessions/{name}/system-prompt", s.setSystemPrompt, false},
 		{"PUT /sessions/{name}/skills/{skill}", s.putSkill, false},
 
+		{"GET /sessions/{name}/artifacts", s.listArtifacts, false},
+		{"GET /sessions/{name}/artifacts/{path...}", s.getArtifact, false},
+
 		{"GET /jobs/{id}", s.getJob, false},
 		{"DELETE /jobs/{id}", s.deleteJob, false},
 	}
@@ -176,6 +182,7 @@ func (s *Server) Janitor(ctx context.Context, interval time.Duration) {
 			return
 		case <-t.C:
 			s.Store.Sweep()
+			s.Store.SweepArtifacts()
 		}
 	}
 }
