@@ -92,7 +92,7 @@ GET    /commands                         the slash-command allowlist
 PUT    /commands                         replace it (YAML or JSON)
 
 POST   /sessions                         {name, repo?, system_prompt?,
-                                          permission_mode?, model?, effort?,
+                                          model?, effort?,
                                           context?, skills?, respond_within?}
 GET    /sessions                         both kinds, reconciled against tmux
 GET    /sessions/{name}                  dir, kind, status, session_id, turns
@@ -516,18 +516,41 @@ log applies with full force: quoting defends the shell and does nothing about a
 
 ## Authentication
 
-32 bytes from `crypto/rand`, base64url, prefixed `cbx_live_`. Stored at
-`~/.local/state/cbx/api-key` with mode `0600` — the same `XDG_STATE_HOME`
-convention as `sessions.db`, because it is generated data cbx can reissue.
+32 bytes from `crypto/rand`, base64url, prefixed `cbx_live_`. Presented as
+`Authorization: Bearer <key>` and compared with `subtle.ConstantTimeCompare`,
+against every key rather than stopping at the match — never `==`, and never an
+early return: a byte-at-a-time comparison leaks the key's prefix, and a loop
+that stops early leaks which label was hit.
 
-Presented as `Authorization: Bearer <key>` and compared with
-`subtle.ConstantTimeCompare`. Never `==`: a byte-at-a-time comparison leaks the
-key's prefix to anyone willing to time the responses.
+### Keys are rows; roles are a file
 
-The key is stored in the clear. On a single-tenant box anyone who can read that
-file is already root and can read `sessions.db`, every transcript and every
-token on the machine — a hash would protect nothing while making the key
-unrecoverable when a phone loses it. `cbx api-key show` reads it back.
+A key is a row in `sessions.db` — label, value, the role it was issued against,
+and when. A role is a named set of deny rules in `~/.config/cbx/cbx.yaml`.
+
+```
+cbx api-key add backend --role reporter
+cbx api-key list
+cbx api-key permit backend --role readonly
+cbx api-key rotate backend
+cbx api-key revoke backend
+```
+
+The split is the point. `PUT /commands` lets a caller rewrite that config file,
+so anything a caller must not be able to change cannot live in it — a
+credential the caller can edit is not a constraint on that caller. Rules the
+caller *cannot* reach are exactly what belongs there, and they are hand-edited
+by somebody with ssh.
+
+Each request resolves to the role its key names, and the role's deny rules are
+written to a per-key settings file and passed to Claude Code with `--settings`.
+An unknown role is a 403 rather than a default: a key naming a role nobody
+defined should stop working loudly, because the fallback would be precisely the
+boundary somebody meant to tighten.
+
+Keys are stored in the clear. On a single-tenant box anyone who can read that
+database is already root and can read every transcript and token on the machine
+— a hash would protect nothing while making a key unrecoverable when a phone
+loses it.
 
 **Wrong if** ClaudeBox ever runs sessions for anyone but the box's owner, which
 is the same condition that would retire `IS_SANDBOX=1` and the shared root
@@ -538,14 +561,13 @@ account.
 Three callers, one door:
 
 ```
-POST /auth/rotate                 needs the current key, returns the new one
-cbx api-key rotate                on the box
-cbx-setuptool api rotate --host   from a laptop
+POST /auth/rotate                            rotates the calling key
+cbx api-key rotate <label>                   on the box
+cbx-setuptool api key rotate <label> --host  from a laptop
 ```
 
-All three call one function. The key has one definition and one writer; a
-second place that issues keys is a second source of truth about what the
-current key is.
+All three call one function, and the label's role is carried across unchanged —
+rotating a credential is not a moment to also change what it may do.
 
 Rotation takes effect immediately and the old key stops working on the next
 request. There is no grace period, because the reason to rotate is usually that
@@ -647,20 +669,26 @@ The API is opt-in:
 cbx-setuptool setup --host <ip> --binary ./cbx-linux --with-api
 ```
 
-The step uploads the command spec, writes the systemd unit, enables and starts
-it, and prints the key. `cbx-setuptool status` gains a line for whether the
+The step uploads the config file, writes the systemd unit, enables and starts
+it, and prints a key if the box has one. `cbx-setuptool status` gains a line for whether the
 service is running, and the API can be managed afterwards on its own:
 
 ```
-cbx-setuptool api install --host <ip>    unit, spec and key in one go
-cbx-setuptool api key     --host <ip>    what the box currently accepts
-cbx-setuptool api rotate  --host <ip>    new key, and restart onto it
-cbx-setuptool api forward --host <ip>    the ssh tunnel that reaches it
+cbx-setuptool api install --host <ip>                      unit, config and key in one go
+cbx-setuptool api key list --host <ip>                     what the box accepts
+cbx-setuptool api key add backend --role reporter --host   issue one
+cbx-setuptool api key rotate backend --host <ip>           replace its value
+cbx-setuptool api key revoke backend --host <ip>           end it
+cbx-setuptool api forward --host <ip>                      the ssh tunnel that reaches it
 ```
 
-Rotation restarts the service deliberately: a running server holds the key it
-started with, so rewriting the file alone would leave the old key working until
-something happened to restart it.
+These are a pass-through to `cbx api-key` over ssh, not a second
+implementation: the box already knows what a key is, and setuptool knowing too
+would be two answers to the same question. It needs no key of its own, because
+ssh already outranks any of them.
+
+No restart is involved. Keys are read from the database per request, so a key
+issued, rotated or revoked takes effect on the next one.
 
 Two ways to reach it, because they serve different callers:
 
@@ -707,12 +735,16 @@ effort            TEXT    NOT NULL DEFAULT ''
 turns             INTEGER NOT NULL DEFAULT 0
 ```
 
-`permission_mode` is set once, when the session is created, and passed to every
-query as `--permission-mode`. It is a property of the session rather than of a
-request: a caller that could raise its own permissions per query would make the
-setting meaningless. Empty means cbx's default for a headless session, which is
-the same `bypassPermissions` premise the tmux sessions run on and named in the
-same deliberate way — a query has nobody to answer a prompt either.
+`permission_mode` is set once, when the session is created, from the role the
+caller's key holds, and passed to every query as `--permission-mode`. The
+caller never supplies it: a caller that could pick its own mode could pick the
+one that ignores its role's deny rules.
+
+Every headless session runs `acceptEdits`, the only mode that both works
+unattended and honours those rules. Measured against Claude Code 2.1.236: under
+`bypassPermissions` a deny rule is ignored entirely, and `manual` needs somebody
+present to approve each edit. The column stays because the mode is a property of
+the session and the sessions outlive the role that set them.
 
 Accepted values are Claude Code's own: `acceptEdits`, `auto`,
 `bypassPermissions`, `manual`. Anything else is `400` at session creation
@@ -771,8 +803,8 @@ internal/claude/    the claude -p seam — build argv, exec, parse the JSON resu
 internal/store/     + kind, claude_session_id, system_prompt, turns; + jobs
   detach.go         re-exec with Setsid, the flock, --stop's group signal
   commands.go       load the spec, resolve a command to its effect
-cmd/cbx/            + serve [--detach|--stop], + api-key show|rotate
-internal/setuptool/ + the --with-api step, + api expose|rotate
+cmd/cbx/            + serve [--detach|--stop], + api-key list|add|permit|rotate|revoke
+internal/setuptool/ + the --with-api step, + api key|expose
 ```
 
 `internal/claude` mirrors `internal/tmux`: a thin layer over one external
@@ -790,11 +822,12 @@ already have. *Wrong if* the master session ever needs to query a headless
 conversation while the API server is down, which is an argument for making the
 server more reliable rather than for a second entry point.
 
-**`permission_mode` is per session, set at creation, in the request body.** It
-is a property of the session, not of a request: a caller that could raise its
-own permissions per query would make the setting meaningless. *Wrong if* a
-single session genuinely needs different permissions per task, at which point
-the answer is two sessions.
+**Permissions belong to the key, not the request.** A key is issued against a
+role, and the role's deny rules reach every session that key creates. Nothing in
+any request body can widen them, which is the only arrangement where the answer
+to "what can this caller do" is a property of the caller rather than of whatever
+it last sent. *Wrong if* one caller genuinely needs two levels of access, at
+which point the answer is two keys.
 
 **`DELETE` removes the transcript.** Closing a session should not leave its
 history readable on the box. The project directory survives. *Wrong if* someone

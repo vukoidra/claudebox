@@ -13,7 +13,7 @@ endpoint by hand.
 ```bash
 uv run clients/python/tui.py \
   --url http://127.0.0.1:8091 \
-  --key "$(ssh root@box cbx api-key show | cut -f2)"
+  --key "$(ssh root@box cbx api-key list | awk '$1=="laptop"{print $2}')"
 ```
 
 `CLAUDEBOX_URL` and `CLAUDEBOX_KEY` work instead of the flags. The API binds
@@ -35,6 +35,11 @@ it.
 | `m` `o` | show the command allowlist · list every endpoint from OpenAPI |
 | `k` | rotate the API key — the old one dies immediately |
 
+A query that outlives its `respond_within` comes back as `202` and a job. The
+client follows it from there: the job appears on the **Jobs** tab and its
+answer lands in Query when it finishes, so a long turn costs nothing but
+patience. Cancelling is on that tab too, and frees the session immediately.
+
 **Stamp**, next to the artifacts field, adds a UTC timestamp to each declared
 name. Two queries in one session that both write `report.html` leave one
 report, and the box cannot know which you wanted.
@@ -44,7 +49,9 @@ report, and the box cannot know which you wanted.
 | <img src="screenshots/02-artifacts.svg" width="420" alt="The artifacts tab, listing only the files a query declared, with size and expiry."> | <img src="screenshots/03-openapi.svg" width="420" alt="Every endpoint, read from the box's own OpenAPI document."> |
 | What this session may hand back — only declared outputs, with their 4h expiry. | Every endpoint, listed from the box's own OpenAPI document. |
 | <img src="screenshots/04-commands.svg" width="420" alt="The slash-command allowlist the box will run."> | <img src="screenshots/05-new-session.svg" width="420" alt="Creating a session, fixing its model, effort and permission mode."> |
-| The slash-command allowlist. Anything not in it is refused. | Model, effort and permission mode are fixed when the session is created. |
+| The slash-command allowlist. Anything not in it is refused. | Model, effort and context are fixed when the session is created. The permission mode is not offered — the key's role fixes it. |
+| <img src="screenshots/06-jobs.svg" width="420" alt="The jobs tab, listing each query that outlived its window with its status and how long it has been running."> | |
+| Queries that outlived their window, followed in the background until they finish. | |
 
 ## The client
 

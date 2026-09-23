@@ -57,11 +57,19 @@ func liveAPI(t *testing.T) (*httptest.Server, *store.Store, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := api.New(st, e2eKey)
+	// A key is a row and a role is a file, so the harness sets up both the
+	// way a provisioned box would.
+	configPath := filepath.Join(t.TempDir(), "cbx.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nroles:\n  e2e:\n    deny: []\ncommands:\n  - name: /clear\n    effect: rotate-session\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AdoptKey("e2e", e2eKey, "e2e"); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := api.New(st)
 	srv.Home = home
-	// An empty spec path falls back to the shipped default, which is what a
-	// fresh box runs.
-	srv.SpecPath = filepath.Join(t.TempDir(), "commands.yaml")
+	srv.ConfigPath = configPath
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

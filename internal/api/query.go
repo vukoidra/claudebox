@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/vutran1710/claudebox/internal/boxconfig"
 	"github.com/vutran1710/claudebox/internal/claude"
-	"github.com/vutran1710/claudebox/internal/commandspec"
 	"github.com/vutran1710/claudebox/internal/store"
 )
 
@@ -99,8 +99,14 @@ func (s *Server) query(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	settings, err := s.settingsFor(caller(r))
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	s.run(w, sess, claude.Request{
 		Dir:            sess.Dir,
+		SettingsPath:   settings,
 		Prompt:         req.Prompt,
 		SessionID:      sess.ClaudeSessionID,
 		SystemPrompt:   sess.SystemPrompt,
@@ -127,7 +133,7 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	spec, err := commandspec.Load(s.SpecPath)
+	spec, err := boxconfig.Load(s.ConfigPath)
 	if err != nil {
 		// A malformed spec is refused rather than replaced by the default:
 		// answering with a policy nobody chose is worse than answering with
@@ -141,7 +147,7 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cmd.Effect == commandspec.RotateSession {
+	if cmd.Effect == boxconfig.RotateSession {
 		// Forwarded, /clear reports success, forks a new conversation id and
 		// leaves the transcript intact. Rotating the id is what actually
 		// forgets, so cbx does it rather than asking Claude to.
@@ -167,8 +173,14 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	settings, err := s.settingsFor(caller(r))
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	s.run(w, sess, claude.Request{
 		Dir:            sess.Dir,
+		SettingsPath:   settings,
 		Prompt:         req.Command,
 		SessionID:      sess.ClaudeSessionID,
 		SystemPrompt:   sess.SystemPrompt,

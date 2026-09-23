@@ -154,8 +154,8 @@ func cbxDefaultVersion(requested string) string {
 }
 
 // runAPI operates the API server on an already-provisioned box.
-func runAPI(t setuptool.Target, action string) error {
-	switch action {
+func runAPI(t setuptool.Target, args []string, role string) error {
+	switch args[0] {
 	case "install":
 		if err := setuptool.UploadCommandSpec(t); err != nil {
 			return err
@@ -165,24 +165,33 @@ func runAPI(t setuptool.Target, action string) error {
 		}
 		key, err := setuptool.APIKey(t)
 		if err != nil {
-			return err
+			// A box with no keys yet is not a failed install; it is an
+			// install that needs one issued.
+			fmt.Printf("service\tcbx-api\n")
+			fmt.Printf("addr\thttp://%s\n", setuptool.DefaultAPIAddr)
+			fmt.Fprintf(os.Stderr, "note: %v\n", err)
+			return nil
 		}
 		fmt.Printf("service\tcbx-api\n")
 		fmt.Printf("addr\thttp://%s\n", setuptool.DefaultAPIAddr)
 		fmt.Printf("key\t%s\n", key)
 		fmt.Printf("forward\t%s\n", setuptool.ForwardCommand(t, setuptool.DefaultAPIAddr))
 	case "key":
-		key, err := setuptool.APIKey(t)
+		action := "list"
+		label := ""
+		if len(args) > 1 {
+			action = args[1]
+		}
+		if len(args) > 2 {
+			label = args[2]
+		}
+		out, err := setuptool.Keys(t, action, label, role)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("key\t%s\n", key)
-	case "rotate":
-		key, err := setuptool.RotateAPIKey(t)
-		if err != nil {
-			return err
+		if out != "" {
+			fmt.Println(out)
 		}
-		fmt.Printf("key\t%s\n", key)
 	case "forward":
 		fmt.Printf("forward\t%s\n", setuptool.ForwardCommand(t, setuptool.DefaultAPIAddr))
 	case "expose":
@@ -193,13 +202,11 @@ func runAPI(t setuptool.Target, action string) error {
 		if err != nil {
 			return err
 		}
-		key, keyErr := setuptool.APIKey(t)
 		fmt.Printf("url\t%s\n", url)
-		if keyErr == nil {
+		if key, kerr := setuptool.APIKey(t); kerr == nil {
 			fmt.Printf("key\t%s\n", key)
 		}
-		// Worth saying plainly: this is now on the internet.
-		fmt.Fprintln(os.Stderr, "note: the tunnel is public — the bearer key is the only thing protecting these sessions, and the URL changes whenever it restarts")
+		fmt.Fprintln(os.Stderr, "note: the tunnel is public — a key is the only thing protecting these sessions, and the URL changes whenever it restarts")
 	case "url":
 		url, err := setuptool.TunnelURL(t, 10*time.Second)
 		if err != nil {
@@ -207,7 +214,7 @@ func runAPI(t setuptool.Target, action string) error {
 		}
 		fmt.Printf("url\t%s\n", url)
 	default:
-		return fmt.Errorf("unknown api command %q (install, key, rotate, forward, expose, url)", action)
+		return fmt.Errorf("unknown api command %q (install, key, forward, expose, url)", args[0])
 	}
 	return nil
 }

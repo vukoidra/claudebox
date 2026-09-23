@@ -3,12 +3,8 @@ package api
 import (
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 
-	"gopkg.in/yaml.v3"
-
-	"github.com/vutran1710/claudebox/internal/commandspec"
+	"github.com/vutran1710/claudebox/internal/boxconfig"
 )
 
 // Reading and replacing the command allowlist over HTTP, so a box's policy can
@@ -20,19 +16,19 @@ import (
 // *mistake* — a command that silently does nothing — not an attacker.
 
 type commandsView struct {
-	Path     string                `json:"path"`
-	Version  int                   `json:"version"`
-	Commands []commandspec.Command `json:"commands"`
+	Path     string              `json:"path"`
+	Version  int                 `json:"version"`
+	Commands []boxconfig.Command `json:"commands"`
 }
 
 func (s *Server) getCommands(w http.ResponseWriter, _ *http.Request) {
-	spec, err := commandspec.Load(s.SpecPath)
+	spec, err := boxconfig.Load(s.ConfigPath)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, commandsView{
-		Path: s.SpecPath, Version: spec.Version, Commands: spec.Commands,
+		Path: s.ConfigPath, Version: spec.Version, Commands: spec.Commands,
 	})
 }
 
@@ -52,27 +48,19 @@ func (s *Server) putCommands(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	spec, err := commandspec.Parse(raw)
+	spec, err := boxconfig.Parse(raw)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// Written back from the parsed form, so what lands on disk is what was
-	// accepted rather than whatever shape the body happened to be in.
-	out, err := yaml.Marshal(spec)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(s.SpecPath), 0o755); err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := os.WriteFile(s.SpecPath, out, 0o644); err != nil {
+	// Only the commands section. Marshalling the whole parsed config and
+	// writing it would drop the roles — one file with two writers, which is
+	// the hazard of keeping policy and a caller-writable list together.
+	if err := boxconfig.WriteCommands(s.ConfigPath, spec.Commands); err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, commandsView{
-		Path: s.SpecPath, Version: spec.Version, Commands: spec.Commands,
+		Path: s.ConfigPath, Version: spec.Version, Commands: spec.Commands,
 	})
 }

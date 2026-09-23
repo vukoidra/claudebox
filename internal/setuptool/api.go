@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/vutran1710/claudebox/internal/commandspec"
+	"github.com/vutran1710/claudebox/internal/boxconfig"
 )
 
 // Installing and operating the API server on a box.
@@ -94,7 +94,7 @@ func UploadCommandSpec(t Target) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(commandspec.Default()); err != nil {
+	if _, err := tmp.Write(boxconfig.Default()); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -108,35 +108,44 @@ func APIRunning(t Target) bool {
 	return err == nil
 }
 
-// APIKey reads the box's current key.
-func APIKey(t Target) (string, error) {
-	out, err := remote(t, "cbx api-key show")
-	if err != nil {
-		return "", fmt.Errorf("read the API key: %w", err)
+// Keys drives `cbx api-key` on the box.
+//
+// A pass-through rather than a second implementation: the box already knows
+// how to manage its own keys, and having setuptool know too would be two
+// answers to what a key is. It reaches them over ssh, which is why setuptool
+// needs no key of its own — ssh already outranks any of them.
+//
+// A key is issued against a *role*, and the role decides what the sessions
+// created with it may touch. The roles themselves live in the box's config
+// file and are edited there.
+func Keys(t Target, action, label, role string) (string, error) {
+	cmd := "cbx api-key " + shq(action)
+	if label != "" {
+		cmd += " " + shq(label)
 	}
-	return parseFact(out, "key")
+	if role != "" {
+		cmd += " --role " + shq(role)
+	}
+	out, err := remote(t, cmd)
+	if err != nil {
+		return "", fmt.Errorf("api-key %s: %w", action, err)
+	}
+	return strings.TrimRight(out, "\n"), nil
 }
 
-// RotateAPIKey issues a new key and restarts the server onto it.
-//
-// The restart is the point: a running server holds the key it started with, so
-// rotating the file alone would leave the old key working until something
-// happened to restart it.
-func RotateAPIKey(t Target) (string, error) {
-	out, err := remote(t, "cbx api-key rotate")
+// APIKey reads a usable key off the box, for printing after setup.
+func APIKey(t Target) (string, error) {
+	out, err := remote(t, "cbx api-key list")
 	if err != nil {
-		return "", fmt.Errorf("rotate the API key: %w", err)
+		return "", fmt.Errorf("read the API keys: %w", err)
 	}
-	key, err := parseFact(out, "key")
-	if err != nil {
-		return "", err
-	}
-	if APIRunning(t) {
-		if _, err := remote(t, "systemctl restart cbx-api"); err != nil {
-			return key, fmt.Errorf("the key was rotated but the server still holds the old one: %w", err)
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "\t")
+		if len(fields) >= 2 && strings.HasPrefix(fields[1], "cbx_live_") {
+			return fields[1], nil
 		}
 	}
-	return key, nil
+	return "", fmt.Errorf("this box has no API keys — `cbx-setuptool api key add <label> --role reporter`")
 }
 
 // parseFact pulls one value out of cbx's tab-separated output.

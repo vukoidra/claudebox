@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vutran1710/claudebox/internal/boxconfig"
 	"github.com/vutran1710/claudebox/internal/claude"
-	"github.com/vutran1710/claudebox/internal/commandspec"
 	"github.com/vutran1710/claudebox/internal/store"
 	"github.com/vutran1710/claudebox/internal/tmux"
 )
@@ -44,10 +44,9 @@ type Server struct {
 	Claude *claude.Client
 	Tmux   *tmux.Client
 
-	Key      string
-	SpecPath string
-	Home     string
-	JobTTL   time.Duration
+	ConfigPath string
+	Home       string
+	JobTTL     time.Duration
 	// ArtifactTTL is how long a declared output stays fetchable; zero means
 	// DefaultArtifactTTL.
 	ArtifactTTL time.Duration
@@ -66,20 +65,23 @@ type Server struct {
 }
 
 // New builds a server with the real dependencies.
-func New(st *store.Store, key string) *Server {
+//
+// No key is passed in. Who may call this box, and what their sessions may do,
+// is read from the config file on every request — so revoking a key is an
+// edit over ssh rather than a restart.
+func New(st *store.Store) *Server {
 	home, _ := os.UserHomeDir()
 	return &Server{
-		Store:    st,
-		Claude:   claude.New(),
-		Tmux:     tmux.New(),
-		Key:      key,
-		SpecPath: commandspec.DefaultPath(),
-		Home:     home,
-		JobTTL:   DefaultJobTTL,
-		Version:  "dev",
-		now:      time.Now,
-		newID:    newJobID,
-		cancels:  map[string]context.CancelFunc{},
+		Store:      st,
+		Claude:     claude.New(),
+		Tmux:       tmux.New(),
+		ConfigPath: boxconfig.DefaultPath(),
+		Home:       home,
+		JobTTL:     DefaultJobTTL,
+		Version:    "dev",
+		now:        time.Now,
+		newID:      newJobID,
+		cancels:    map[string]context.CancelFunc{},
 	}
 }
 
@@ -91,7 +93,7 @@ func New(st *store.Store, key string) *Server {
 type route struct {
 	Pattern string
 	Handler http.HandlerFunc
-	// Public endpoints skip the bearer key. Only two do.
+	// Public endpoints skip the bearer key. Only one does.
 	Public bool
 }
 
@@ -99,30 +101,30 @@ func (s *Server) routes() []route {
 	return []route{
 		// A health check is for a load balancer, and one that needed a
 		// credential could not do its job.
-		{"GET /healthz", s.health, true},
+		{Pattern: "GET /healthz", Handler: s.health, Public: true},
 
-		{"GET /openapi.yaml", s.openAPIYAML, false},
-		{"GET /openapi.json", s.openAPIJSON, false},
+		{Pattern: "GET /openapi.yaml", Handler: s.openAPIYAML},
+		{Pattern: "GET /openapi.json", Handler: s.openAPIJSON},
 
-		{"POST /auth/rotate", s.rotateKey, false},
+		{Pattern: "POST /auth/rotate", Handler: s.rotateKey},
 
-		{"GET /commands", s.getCommands, false},
-		{"PUT /commands", s.putCommands, false},
+		{Pattern: "GET /commands", Handler: s.getCommands},
+		{Pattern: "PUT /commands", Handler: s.putCommands},
 
-		{"POST /sessions", s.createSession, false},
-		{"GET /sessions", s.listSessions, false},
-		{"GET /sessions/{name}", s.getSession, false},
-		{"DELETE /sessions/{name}", s.deleteSession, false},
+		{Pattern: "POST /sessions", Handler: s.createSession},
+		{Pattern: "GET /sessions", Handler: s.listSessions},
+		{Pattern: "GET /sessions/{name}", Handler: s.getSession},
+		{Pattern: "DELETE /sessions/{name}", Handler: s.deleteSession},
 
-		{"POST /sessions/{name}/query", s.query, false},
-		{"POST /sessions/{name}/command", s.command, false},
-		{"PUT /sessions/{name}/skills/{skill}", s.putSkill, false},
+		{Pattern: "POST /sessions/{name}/query", Handler: s.query},
+		{Pattern: "POST /sessions/{name}/command", Handler: s.command},
+		{Pattern: "PUT /sessions/{name}/skills/{skill}", Handler: s.putSkill},
 
-		{"GET /sessions/{name}/artifacts", s.listArtifacts, false},
-		{"GET /sessions/{name}/artifacts/{path...}", s.getArtifact, false},
+		{Pattern: "GET /sessions/{name}/artifacts", Handler: s.listArtifacts},
+		{Pattern: "GET /sessions/{name}/artifacts/{path...}", Handler: s.getArtifact},
 
-		{"GET /jobs/{id}", s.getJob, false},
-		{"DELETE /jobs/{id}", s.deleteJob, false},
+		{Pattern: "GET /jobs/{id}", Handler: s.getJob},
+		{Pattern: "DELETE /jobs/{id}", Handler: s.deleteJob},
 	}
 }
 
@@ -144,30 +146,29 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-func (s *Server) authenticate(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !keyMatches(presentedKey(r.Header.Get("Authorization")), s.Key) {
-			fail(w, http.StatusUnauthorized, "a valid Authorization: Bearer <key> is required")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	// Deliberately says nothing about whether a key is configured: a health
 	// check is for a load balancer, not a way to probe the box's state.
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.Version})
 }
 
-func (s *Server) rotateKey(w http.ResponseWriter, _ *http.Request) {
-	key, err := RotateKey(DefaultKeyPath())
+// rotateKey issues a new value for the calling key's own entry.
+//
+// Its own and no other: a caller may replace the credential it already holds,
+// which is what rotation is, and may not touch anybody else's or grant itself
+// different permissions. Those live in the config file and change over ssh.
+func (s *Server) rotateKey(w http.ResponseWriter, r *http.Request) {
+	key := caller(r)
+	if key == nil {
+		fail(w, http.StatusUnauthorized, "unknown key")
+		return
+	}
+	fresh, err := s.Store.RotateKey(key.Label)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.Key = key
-	writeJSON(w, http.StatusOK, map[string]string{"api_key": key})
+	writeJSON(w, http.StatusOK, map[string]string{"label": key.Label, "api_key": fresh})
 }
 
 // Janitor sweeps expired jobs until ctx is done. Started with the server and

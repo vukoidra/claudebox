@@ -448,7 +448,10 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: The key from `cbx api-key show`, compared in constant time.
+      description: |
+        A key issued with `cbx api-key add <label> --role <role>`, compared in
+        constant time. The role it was issued against decides what the sessions
+        created with it may touch; the caller never chooses.
 
   parameters:
     SessionName:
@@ -527,10 +530,6 @@ components:
         system_prompt:
           type: string
           description: Appended to Claude's default on every query.
-        permission_mode:
-          type: string
-          enum: [acceptEdits, auto, bypassPermissions, manual]
-          description: Fixed at creation. A caller that could raise its own permissions per query would make this meaningless.
         model:
           type: string
           description: An alias (`opus`), a full name (`claude-fable-5`), or a variant (`opus[1m]`).
@@ -619,7 +618,13 @@ components:
           type: string
           description: The Claude conversation this session resumes.
         system_prompt: { type: string }
-        permission_mode: { type: string }
+        permission_mode:
+          type: string
+          description: |
+            What the key's role fixed this session to. Reported, never
+            accepted — a caller that could choose it would make the role
+            meaningless.
+          readOnly: true
         model: { type: string }
         effort: { type: string }
         context:

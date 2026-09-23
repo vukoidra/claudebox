@@ -82,7 +82,7 @@ class Session:
     repo: str = ""
     rc_url: str = ""
     system_prompt: str = ""
-    permission_mode: str = ""
+    permission_mode: str = ""   # what the key's role fixed it to, read-only
     model: str = ""
     effort: str = ""
     context: tuple[str, ...] = ()
@@ -256,7 +256,6 @@ class ClaudeBox:
         *,
         repo: str = "",
         system_prompt: str = "",
-        permission_mode: str = "",
         model: str = "",
         effort: str = "",
         skills: Iterable[str] = (),
@@ -265,8 +264,9 @@ class ClaudeBox:
     ) -> Session:
         """Create a headless session.
 
-        ``model``, ``effort`` and ``permission_mode`` are fixed here because
-        Claude Code treats all three as properties of a session.
+        ``model`` and ``effort`` are fixed here because Claude Code treats both
+        as properties of a session. The permission mode is not offered: it
+        comes from the role the key holds, which is the point of a role.
 
         ``skills`` *invokes* those skills as turns, which costs time — and is
         usually unnecessary, since skills installed on the box are already
@@ -283,7 +283,6 @@ class ClaudeBox:
         for key, value in (
             ("repo", repo),
             ("system_prompt", system_prompt),
-            ("permission_mode", permission_mode),
             ("model", model),
             ("effort", effort),
         ):

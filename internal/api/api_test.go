@@ -25,6 +25,22 @@ import (
 
 const testKey = "cbx_live_test-key"
 
+// testConfig is the policy every harness runs under: one role that can do
+// everything, so a test asserting something else is asserting it on purpose.
+const testConfig = `
+version: 1
+roles:
+  tester:
+    deny: []
+  restricted:
+    deny: ["Write(//**)"]
+commands:
+  - name: /clear
+    effect: rotate-session
+  - name: /context
+    effect: forward
+`
+
 type harness struct {
 	*Server
 	t   *testing.T
@@ -41,19 +57,28 @@ func answering(t *testing.T, run claude.Runner) *harness {
 	t.Cleanup(func() { st.Close() })
 
 	home := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "cbx.yaml")
+	if err := os.WriteFile(configPath, []byte(testConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The key is a row, not a field: what a caller may do is looked up, so a
+	// test cannot accidentally grant itself something by constructing it.
+	if _, err := st.AdoptKey("tester", testKey, "tester"); err != nil {
+		t.Fatalf("register the test key: %v", err)
+	}
+
 	var n atomic.Int64
 	s := &Server{
-		Store:    st,
-		Claude:   claude.New().WithRunner(run),
-		Tmux:     tmux.New().WithRunner(func(string) (string, error) { return "", fmt.Errorf("no tmux") }),
-		Key:      testKey,
-		SpecPath: filepath.Join(t.TempDir(), "commands.yaml"),
-		Home:     home,
-		JobTTL:   time.Hour,
-		Version:  "test",
-		now:      time.Now,
-		newID:    func() string { return fmt.Sprintf("j_%d", n.Add(1)) },
-		cancels:  map[string]context.CancelFunc{},
+		Store:      st,
+		Claude:     claude.New().WithRunner(run),
+		Tmux:       tmux.New().WithRunner(func(string) (string, error) { return "", fmt.Errorf("no tmux") }),
+		ConfigPath: configPath,
+		Home:       home,
+		JobTTL:     time.Hour,
+		Version:    "test",
+		now:        time.Now,
+		newID:      func() string { return fmt.Sprintf("j_%d", n.Add(1)) },
+		cancels:    map[string]context.CancelFunc{},
 	}
 	return &harness{Server: s, t: t, dir: home}
 }
@@ -179,7 +204,6 @@ func TestAWrongKeyIsRejected(t *testing.T) {
 
 func TestRotateReturnsAKeyThatWorksAndKillsTheOld(t *testing.T) {
 	h := answering(t, answers("s", "hi"))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	w := h.do("POST", "/auth/rotate", nil)
 	if w.Code != http.StatusOK {
@@ -209,49 +233,36 @@ func TestRotateReturnsAKeyThatWorksAndKillsTheOld(t *testing.T) {
 	}
 }
 
-func TestKeyGenerationIsUnique(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 100; i++ {
-		k, err := NewKey()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if seen[k] {
-			t.Fatal("NewKey repeated itself")
-		}
-		if !strings.HasPrefix(k, KeyPrefix) {
-			t.Fatalf("key %q has no prefix", k)
-		}
-		seen[k] = true
+// A key naming a role nobody defined is refused rather than defaulted. The
+// fallback would be exactly the boundary somebody meant to tighten.
+func TestAKeyWithAnUndefinedRoleIsRefused(t *testing.T) {
+	h := answering(t, answers("s", "hi"))
+	value, err := h.Store.AddKey("stray", "no-such-role")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/sessions", nil)
+	r.Header.Set("Authorization", "Bearer "+value)
+	w := httptest.NewRecorder()
+	h.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("code = %d, want 403", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "no-such-role") {
+		t.Errorf("the error does not name the missing role: %s", w.Body)
 	}
 }
 
-func TestTheKeyFileIsPrivateFromCreation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "api-key")
-	if _, err := RotateKey(path); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("mode = %o, want 600", perm)
-	}
-}
-
-func TestLoadOrCreateKeyIsStable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "api-key")
-	first, err := LoadOrCreateKey(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	again, err := LoadOrCreateKey(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first != again {
-		t.Error("LoadOrCreateKey minted a new key over an existing one")
+// The role decides the session's permission mode, and the caller cannot name
+// one: a caller able to choose could choose the one that ignores every rule.
+func TestTheRoleDecidesTheSessionsPermissionMode(t *testing.T) {
+	h := answering(t, answers("s", "hi"))
+	h.do("POST", "/sessions", map[string]any{
+		"name": "moded", "permission_mode": "bypassPermissions",
+	})
+	got, _ := h.Store.Get("moded")
+	if got == nil || got.PermissionMode != claude.AcceptEdits {
+		t.Fatalf("permission_mode = %v, want the role's %q", got, claude.AcceptEdits)
 	}
 }
 
@@ -281,29 +292,6 @@ func TestCreateStoresThePermissionMode(t *testing.T) {
 	got, _ := h.Store.Get("pm")
 	if got == nil || got.PermissionMode != claude.AcceptEdits {
 		t.Fatalf("stored = %v", got)
-	}
-}
-
-func TestCreateRejectsAnUnknownPermissionMode(t *testing.T) {
-	h := answering(t, answers("s", "hi"))
-	cases := []struct {
-		mode string
-		want int
-	}{
-		{claude.AcceptEdits, http.StatusCreated},
-		{claude.Auto, http.StatusCreated},
-		{claude.BypassPermissions, http.StatusCreated},
-		{claude.Manual, http.StatusCreated},
-		{"", http.StatusCreated},
-		{"yolo", http.StatusBadRequest},
-	}
-	for i, c := range cases {
-		w := h.do("POST", "/sessions", map[string]any{
-			"name": fmt.Sprintf("pm%d", i), "permission_mode": c.mode,
-		})
-		if w.Code != c.want {
-			t.Errorf("mode %q: code = %d, want %d (%s)", c.mode, w.Code, c.want, w.Body)
-		}
 	}
 }
 
