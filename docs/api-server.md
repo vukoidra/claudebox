@@ -92,7 +92,8 @@ GET    /commands                         the slash-command allowlist
 PUT    /commands                         replace it (YAML or JSON)
 
 POST   /sessions                         {name, repo?, system_prompt?,
-                                          permission_mode?, model?, effort?}
+                                          permission_mode?, model?, effort?,
+                                          skills?, respond_within?}
 GET    /sessions                         both kinds, reconciled against tmux
 GET    /sessions/{name}                  dir, kind, status, session_id, turns
 DELETE /sessions/{name}                  forget it
@@ -128,6 +129,48 @@ running thing. During one there is, and `DELETE` cancels it before forgetting
 the session rather than refusing. That follows `cbx kill`, which succeeds on a
 session that is already gone because *the intent is that it be gone* — the same
 reading applies when the obstacle is a query still in flight.
+
+### Skills can be run into a session as it is created
+
+```
+POST /sessions
+{ "name": "review-bot", "skills": ["inline", "testing"], "respond_within": "3m" }
+```
+
+Each skill is invoked the way Claude Code invokes one — as `/name`, a turn of
+its own. That is not free: a skill measured at twenty seconds of API time. So
+priming follows the query contract rather than inventing a second one, and
+`respond_within` is required whenever `skills` is present. The session is
+created either way; `priming` in the response says whether the skills got in,
+and carries a job to poll when they did not finish in time.
+
+**An unknown skill reports success.** `/not-a-skill` answers
+`Unknown command: /not-a-skill` with `is_error: false` and `turns: 0` — the
+same shape as a command handled locally. Priming therefore checks the answer
+rather than the exit code, because the alternative is a session created
+claiming to know something nothing ever taught it.
+
+It stops at the first skill that fails. A session primed with half of what was
+asked for is worse than one that says which half failed: the caller's
+assumption about what the session knows is already wrong, and continuing would
+bury that under later output.
+
+**Two consequences of creation running turns**, both deliberate and both
+pinned by tests, because a caller meets them without having done anything
+themselves:
+
+- **A query sent while priming is still running gets `409`.** Priming holds the
+  session's one running-query slot, which is the same rule that stops two
+  `--resume` processes interleaving. The session exists before it is usable,
+  and `priming.poll` is how to know when that changes.
+- **A `201` can carry `priming.status: failed`.** Creation succeeded; priming
+  did not. The session is real, usable, and unprimed — rolling it back would
+  discard something that works because something optional did not.
+
+The alternative was deferring the skills to the first query, which would have
+removed both. It was rejected: knowing at creation whether a session got its
+instructions is worth more than an instant `201`, because the answer arrives
+while the caller is still in a position to do something about it.
 
 ### Query: the caller says how long it will wait
 
