@@ -148,7 +148,6 @@ func TestEveryOtherRouteRejectsAMissingKey(t *testing.T) {
 		{"DELETE", "/sessions/x"},
 		{"POST", "/sessions/x/query"},
 		{"POST", "/sessions/x/command"},
-		{"PUT", "/sessions/x/system-prompt"},
 		{"PUT", "/sessions/x/skills/y"},
 		{"GET", "/jobs/j_1"},
 		{"DELETE", "/jobs/j_1"},
@@ -356,7 +355,6 @@ func TestMutatingAnInteractiveSessionIsRefused(t *testing.T) {
 		{"POST", "/sessions/phone/query", map[string]any{"prompt": "hi", "respond_within": "1s"}},
 		{"POST", "/sessions/phone/command", map[string]any{"command": "/clear"}},
 		{"DELETE", "/sessions/phone", nil},
-		{"PUT", "/sessions/phone/system-prompt", map[string]any{"prompt": "x"}},
 	}
 	for _, c := range cases {
 		w := h.do(c.method, c.path, c.body)
@@ -403,15 +401,34 @@ func TestDeleteLeavesTheProjectDirectory(t *testing.T) {
 	}
 }
 
-func TestSystemPromptIsStored(t *testing.T) {
+// The system prompt is set when the session is created and never after —
+// Claude Code snapshots it on the conversation's first request, so there is
+// nothing to change it with. See the note in sessions.go.
+func TestSystemPromptIsStoredAtCreation(t *testing.T) {
 	h := answering(t, answers("s", "hi"))
-	h.headlessSession("sp", "uuid-sp", 0)
-	if w := h.do("PUT", "/sessions/sp/system-prompt", map[string]any{"prompt": "be terse"}); w.Code != http.StatusOK {
-		t.Fatalf("code = %d: %s", w.Code, w.Body)
-	}
+	h.do("POST", "/sessions", map[string]any{"name": "sp", "system_prompt": "be terse"})
 	got, _ := h.Store.Get("sp")
 	if got == nil || got.SystemPrompt != "be terse" {
 		t.Errorf("stored = %v", got)
+	}
+}
+
+func TestTheSystemPromptReachesEveryQuery(t *testing.T) {
+	var seen string
+	h := answering(t, func(_ context.Context, _ string, args []string) ([]byte, error) {
+		seen = strings.Join(args, " ")
+		id := ""
+		for i, a := range args {
+			if a == "--session-id" || a == "--resume" {
+				id = args[i+1]
+			}
+		}
+		return []byte(result(id, "ok", 1)), nil
+	})
+	h.do("POST", "/sessions", map[string]any{"name": "spq", "system_prompt": "be terse"})
+	h.do("POST", "/sessions/spq/query", map[string]any{"prompt": "hi", "respond_within": "10s"})
+	if !strings.Contains(seen, "--append-system-prompt be terse") {
+		t.Errorf("argv %q does not carry the session's system prompt", seen)
 	}
 }
 

@@ -85,12 +85,16 @@ class Session:
     permission_mode: str = ""
     model: str = ""
     effort: str = ""
+    context: tuple[str, ...] = ()
     priming: dict[str, Any] | None = None
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> "Session":
         known = {f for f in cls.__slots__}
-        return cls(**{k: v for k, v in raw.items() if k in known})
+        fields = {k: v for k, v in raw.items() if k in known}
+        if "context" in fields:
+            fields["context"] = tuple(fields["context"] or ())
+        return cls(**fields)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +260,7 @@ class ClaudeBox:
         model: str = "",
         effort: str = "",
         skills: Iterable[str] = (),
+        context: Iterable[str] = (),
         respond_within: Duration | None = None,
     ) -> Session:
         """Create a headless session.
@@ -268,6 +273,13 @@ class ClaudeBox:
         available to every session. Supply ``respond_within`` alongside them.
         """
         body: dict[str, Any] = {"name": name}
+        context = list(context)
+        if context:
+            # Knowledge files under the box's ~/.claude, copied into the
+            # session's CLAUDE.md before its first turn. Fixed at creation:
+            # Claude Code snapshots the system prompt on the first request,
+            # and CLAUDE.md is the thing it re-reads every turn.
+            body["context"] = context
         for key, value in (
             ("repo", repo),
             ("system_prompt", system_prompt),
@@ -289,10 +301,10 @@ class ClaudeBox:
         """Forget the session and its transcript. The directory survives."""
         self._request("DELETE", f"/sessions/{name}")
 
-    def set_system_prompt(self, name: str, prompt: str) -> Session:
-        return Session.from_json(
-            self._json("PUT", f"/sessions/{name}/system-prompt", json={"prompt": prompt})
-        )
+    # There is no set_system_prompt. Claude Code snapshots the system prompt
+    # on a conversation's first request and ignores later ones, so an endpoint
+    # for it would report success having done nothing. Pass ``system_prompt``
+    # and ``context`` to :meth:`create` instead.
 
     def put_skill(self, name: str, skill: str, markdown: str) -> dict[str, Any]:
         """Add a skill to one session, not to the whole box."""

@@ -293,32 +293,6 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Interactive" }
 
-  /sessions/{name}/system-prompt:
-    parameters:
-      - $ref: "#/components/parameters/SessionName"
-    put:
-      tags: [sessions]
-      summary: Set the session's appended system prompt
-      description: Appended to Claude's default, never replacing it, so the box's own CLAUDE.md still applies.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                prompt: { type: string }
-      responses:
-        "200":
-          description: Updated
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Session" }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Interactive" }
-
   /sessions/{name}/skills/{skill}:
     parameters:
       - $ref: "#/components/parameters/SessionName"
@@ -564,6 +538,19 @@ components:
         effort:
           type: string
           enum: [low, medium, high, xhigh, max]
+        context:
+          type: array
+          description: |
+            Knowledge files under the box's `~/.claude`, copied into the
+            session's CLAUDE.md before its first turn. The layout is the
+            operator's — cbx only resolves paths and refuses ones that escape
+            the directory or are not there.
+
+            Fixed at creation. Claude Code snapshots the system prompt on a
+            conversation's first request and ignores later ones, so CLAUDE.md
+            — which it re-reads every turn — is what carries this.
+          items: { type: string }
+          example: [domains/billing.md, clients/northwind.md]
         skills:
           type: array
           description: |
@@ -635,6 +622,10 @@ components:
         permission_mode: { type: string }
         model: { type: string }
         effort: { type: string }
+        context:
+          type: array
+          description: The knowledge files this session was built with.
+          items: { type: string }
         turns:
           type: integer
           description: Turns that reached the model. At 0 the conversation does not exist yet.

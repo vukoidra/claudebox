@@ -16,18 +16,19 @@ import (
 )
 
 type sessionView struct {
-	Name           string `json:"name"`
-	Dir            string `json:"dir"`
-	Kind           string `json:"kind"`
-	Status         string `json:"status"`
-	Repo           string `json:"repo,omitempty"`
-	RCURL          string `json:"rc_url,omitempty"`
-	SessionID      string `json:"session_id,omitempty"`
-	SystemPrompt   string `json:"system_prompt,omitempty"`
-	PermissionMode string `json:"permission_mode,omitempty"`
-	Model          string `json:"model,omitempty"`
-	Effort         string `json:"effort,omitempty"`
-	Turns          int    `json:"turns"`
+	Name           string   `json:"name"`
+	Dir            string   `json:"dir"`
+	Kind           string   `json:"kind"`
+	Status         string   `json:"status"`
+	Repo           string   `json:"repo,omitempty"`
+	RCURL          string   `json:"rc_url,omitempty"`
+	SessionID      string   `json:"session_id,omitempty"`
+	SystemPrompt   string   `json:"system_prompt,omitempty"`
+	PermissionMode string   `json:"permission_mode,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	Effort         string   `json:"effort,omitempty"`
+	Context        []string `json:"context,omitempty"`
+	Turns          int      `json:"turns"`
 	// Priming is present only when a session was created with skills.
 	Priming *primingView `json:"priming,omitempty"`
 }
@@ -45,7 +46,7 @@ func view(s store.Session, running bool) sessionView {
 		Name: s.Name, Dir: s.Dir, Kind: s.Kind, Status: status, Repo: s.Repo, RCURL: s.RCURL,
 		SessionID: s.ClaudeSessionID, SystemPrompt: s.SystemPrompt,
 		PermissionMode: s.PermissionMode, Model: s.Model, Effort: s.Effort,
-		Turns: s.Turns,
+		Context: s.Context, Turns: s.Turns,
 	}
 }
 
@@ -56,6 +57,9 @@ type createSessionRequest struct {
 	PermissionMode string `json:"permission_mode"`
 	Model          string `json:"model"`
 	Effort         string `json:"effort"`
+	// Context names knowledge files under the box's ~/.claude to give this
+	// session before its first turn.
+	Context []string `json:"context"`
 	// Skills are invoked as turns once the session exists, in the order
 	// given. Each costs a real turn, so respond_within is required with them.
 	Skills        []string       `json:"skills"`
@@ -94,6 +98,14 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			"model %q is not a usable model name — an alias like \"opus\", a full name like \"claude-fable-5\", or a variant like \"opus[1m]\"", req.Model))
 		return
 	}
+	// Resolved before the session exists: a context file that is absent or
+	// outside the knowledge directory should cost a round trip, not a session
+	// created without the knowledge it was asked for.
+	context, err := s.resolveContext(req.Context)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	for _, name := range req.Skills {
 		if !ValidSkillRef(name) {
 			fail(w, http.StatusBadRequest, fmt.Sprintf(
@@ -105,9 +117,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// skills there is nothing slow to wait for and the field is not asked for.
 	var wait time.Duration
 	if len(req.Skills) > 0 {
-		w2, err := window(req.RespondWithin)
-		if err != nil {
-			fail(w, http.StatusBadRequest, err.Error())
+		w2, werr := window(req.RespondWithin)
+		if werr != nil {
+			fail(w, http.StatusBadRequest, werr.Error())
 			return
 		}
 		wait = w2
@@ -125,6 +137,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Written before the session is recorded: a session that exists without
+	// the knowledge it named would be worse than one that was never created.
+	if err := s.writeContext(dir, context); err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	sess := store.Session{
 		Name: req.Name, Dir: dir, Repo: req.Repo, Kind: store.Headless,
 		// The conversation is named now and created by the first query.
@@ -133,6 +151,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		PermissionMode:  req.PermissionMode,
 		Model:           req.Model,
 		Effort:          req.Effort,
+		Context:         context,
 	}
 	if err := s.Store.Put(sess); err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
@@ -234,27 +253,17 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
 }
 
-type systemPromptRequest struct {
-	Prompt string `json:"prompt"`
-}
-
-func (s *Server) setSystemPrompt(w http.ResponseWriter, r *http.Request) {
-	sess := s.headless(w, r.PathValue("name"))
-	if sess == nil {
-		return
-	}
-	var req systemPromptRequest
-	if err := decode(r, &req); err != nil {
-		fail(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	sess.SystemPrompt = req.Prompt
-	if err := s.Store.Put(*sess); err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, view(*sess, false))
-}
+// There is no endpoint for changing a session's system prompt.
+//
+// Claude Code snapshots the system prompt on a conversation's first request
+// and reuses the record verbatim on every later request and resume. A prompt
+// set after that is accepted, stored, passed on every query — and ignored.
+// Measured against 2.1.236: a conversation seeded with one codeword and
+// resumed with another still answered with the first.
+//
+// An endpoint that reports success having done nothing is the failure this
+// project keeps finding in other people's tools. Everything that shapes a
+// session is fixed when it is created.
 
 // skillName is validated, never sanitised. This is a filesystem write driven
 // by a network request, and quoting defends a shell while doing nothing at all

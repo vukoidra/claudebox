@@ -93,7 +93,7 @@ PUT    /commands                         replace it (YAML or JSON)
 
 POST   /sessions                         {name, repo?, system_prompt?,
                                           permission_mode?, model?, effort?,
-                                          skills?, respond_within?}
+                                          context?, skills?, respond_within?}
 GET    /sessions                         both kinds, reconciled against tmux
 GET    /sessions/{name}                  dir, kind, status, session_id, turns
 DELETE /sessions/{name}                  forget it
@@ -105,7 +105,6 @@ DELETE /jobs/{id}                        cancel a running query, or discard a re
 POST   /sessions/{name}/command          {command, respond_within?} → declared
                                           slash commands only
 
-PUT    /sessions/{name}/system-prompt    {prompt}
 PUT    /sessions/{name}/skills/{skill}   SKILL.md body
 
 GET    /sessions/{name}/artifacts        what it may hand back
@@ -132,6 +131,46 @@ running thing. During one there is, and `DELETE` cancels it before forgetting
 the session rather than refusing. That follows `cbx kill`, which succeeds on a
 session that is already gone because *the intent is that it be gone* — the same
 reading applies when the obstacle is a query still in flight.
+
+### Knowledge a session is given, and why it is fixed
+
+A box accumulates documents only some sessions should see — one per subject
+area, one per customer, whatever the operator keeps. `context` names which of
+them a session gets:
+
+```
+POST /sessions
+{ "name": "report-42", "context": ["domains/billing.md", "clients/northwind.md"] }
+```
+
+Paths resolve under the box's `~/.claude`, the same directory `cbx-setuptool
+migrate` fills. cbx knows nothing about what they mean: it resolves them,
+refuses anything that escapes the directory or is not there, and copies what
+they name into the session's `CLAUDE.md`. Whether the layout is `domains/` and
+`clients/` or something else is the operator's business, and putting it in the
+API would make one organisation's taxonomy part of everybody's tool.
+
+**Copied, not imported by reference.** The session directory then records what
+the session actually knew, so a report produced last week is explicable from
+its own directory after the document has moved on. An existing `CLAUDE.md` —
+a cloned repository usually has one — is kept, and writing twice replaces
+rather than stacks.
+
+**`CLAUDE.md` rather than the system prompt, and measured rather than
+assumed.** Claude Code snapshots the system prompt on a conversation's first
+request and reuses the record on every resume; `CLAUDE.md` it re-reads every
+turn. Verified against 2.1.236: a conversation seeded with one codeword and
+resumed with a different `--append-system-prompt` still answered with the
+first, while rewriting `CLAUDE.md` between turns changed the answer.
+
+That is also why **there is no endpoint for changing a session's system
+prompt**. One would accept the change, store it, pass it on every query, and
+be ignored — reporting success having done nothing. Everything that shapes a
+session is fixed when it is created.
+
+Loading knowledge by invoking a skill works too, and costs more: measured at
+four turns to read one file, and the content lands in conversation history
+where compaction can eventually drop it. `context` costs nothing and survives.
 
 ### Skills can be run into a session as it is created
 

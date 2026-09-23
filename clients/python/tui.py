@@ -70,10 +70,12 @@ class NewSession(ModalScreen[dict[str, Any] | None]):
                 placeholder="permission mode — acceptEdits auto bypassPermissions manual",
                 id="permission_mode",
             )
+            yield Input(placeholder="context — domains/x.md, clients/y.md", id="context")
             yield Input(placeholder="skills to invoke, comma separated (costs a turn each)", id="skills")
             yield Label(
-                "Skills on the box already load for every session — name them "
-                "here only to actually run them.",
+                "Context is copied into the session before its first turn and "
+                "cannot be changed later. Skills on the box already load for "
+                "every session — name them here only to actually run them.",
                 classes="hint",
             )
             with Horizontal(classes="dialog-buttons"):
@@ -97,6 +99,7 @@ class NewSession(ModalScreen[dict[str, Any] | None]):
         if not name:
             self.query_one("#name", Input).focus()
             return
+        context = [c.strip() for c in value("context").split(",") if c.strip()]
         skills = [s.strip() for s in value("skills").split(",") if s.strip()]
         self.dismiss(
             {
@@ -106,6 +109,7 @@ class NewSession(ModalScreen[dict[str, Any] | None]):
                 "model": value("model"),
                 "effort": value("effort"),
                 "permission_mode": value("permission_mode"),
+                "context": context,
                 "skills": skills,
                 "respond_within": "5m" if skills else None,
             }
@@ -197,7 +201,6 @@ class ClaudeBoxTUI(App):
         Binding("d", "delete_session", "Delete"),
         Binding("r", "refresh", "Refresh"),
         Binding("c", "run_command", "Command"),
-        Binding("p", "system_prompt", "Prompt"),
         Binding("s", "put_skill", "Add skill"),
         Binding("m", "show_commands", "Allowlist"),
         Binding("o", "show_openapi", "OpenAPI"),
@@ -366,6 +369,7 @@ class ClaudeBoxTUI(App):
                 model=spec["model"],
                 effort=spec["effort"],
                 permission_mode=spec["permission_mode"],
+                context=spec["context"],
                 skills=spec["skills"],
                 respond_within=spec["respond_within"],
             )
@@ -391,25 +395,6 @@ class ClaudeBoxTUI(App):
             self.call_from_thread(self.fail, err)
             return
         self.selected = None
-        self.call_from_thread(self.action_refresh)
-
-    def action_system_prompt(self) -> None:
-        if not self.selected:
-            return
-        self.push_screen(
-            AskFor("Append to the system prompt", "be terse", "Appended, never replacing."),
-            self._set_prompt,
-        )
-
-    @work(thread=True)
-    def _set_prompt(self, prompt: str | None) -> None:
-        if prompt is None or not self.selected:
-            return
-        try:
-            self.box.set_system_prompt(self.selected, prompt)
-        except Exception as err:
-            self.call_from_thread(self.fail, err)
-            return
         self.call_from_thread(self.action_refresh)
 
     def action_put_skill(self) -> None:
