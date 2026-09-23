@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -50,6 +51,9 @@ type Session struct {
 	// PermissionMode: Claude Code treats both as properties of a session.
 	Model  string
 	Effort string
+	// Context names the knowledge files this session was built with, kept so
+	// "what did this report know" has an answer after the fact.
+	Context []string
 	// Turns selects the flag. At 0 the conversation does not exist yet and the
 	// first query must create it with --session-id.
 	Turns int
@@ -139,6 +143,9 @@ func (s *Store) Put(sess Session) error {
 	if created.IsZero() {
 		created = time.Now()
 	}
+	// Stored newline-joined: it is a list a person reads in `cbx export db`,
+	// not something queried by element.
+	ctx := strings.Join(sess.Context, "\n")
 	kind := sess.Kind
 	if kind == "" {
 		// cbx new does not name a kind, and everything it creates is a tmux
@@ -147,16 +154,16 @@ func (s *Store) Put(sess Session) error {
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO sessions (name, dir, repo, rc_url, created_at,
-		   kind, claude_session_id, system_prompt, permission_mode, model, effort, turns)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		   kind, claude_session_id, system_prompt, permission_mode, model, effort, context, turns)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(name) DO UPDATE SET dir=excluded.dir, repo=excluded.repo,
 		   rc_url=excluded.rc_url, created_at=excluded.created_at, kind=excluded.kind,
 		   claude_session_id=excluded.claude_session_id, system_prompt=excluded.system_prompt,
 		   permission_mode=excluded.permission_mode, model=excluded.model,
-		   effort=excluded.effort, turns=excluded.turns`,
+		   effort=excluded.effort, context=excluded.context, turns=excluded.turns`,
 		sess.Name, sess.Dir, sess.Repo, sess.RCURL, created.Unix(),
 		kind, sess.ClaudeSessionID, sess.SystemPrompt, sess.PermissionMode,
-		sess.Model, sess.Effort, sess.Turns)
+		sess.Model, sess.Effort, ctx, sess.Turns)
 	if err != nil {
 		return fmt.Errorf("record session %q: %w", sess.Name, err)
 	}
@@ -168,10 +175,11 @@ func (s *Store) Put(sess Session) error {
 func (s *Store) Get(name string) (*Session, error) {
 	var sess Session
 	var created int64
+	var ctx string
 	err := s.db.QueryRow(
-		`SELECT name, dir, repo, rc_url, created_at, kind, claude_session_id, system_prompt, permission_mode, model, effort, turns FROM sessions WHERE name = ?`, name).
+		`SELECT name, dir, repo, rc_url, created_at, kind, claude_session_id, system_prompt, permission_mode, model, effort, context, turns FROM sessions WHERE name = ?`, name).
 		Scan(&sess.Name, &sess.Dir, &sess.Repo, &sess.RCURL, &created, &sess.Kind, &sess.ClaudeSessionID, &sess.SystemPrompt, &sess.PermissionMode,
-			&sess.Model, &sess.Effort, &sess.Turns)
+			&sess.Model, &sess.Effort, &ctx, &sess.Turns)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -179,12 +187,22 @@ func (s *Store) Get(name string) (*Session, error) {
 		return nil, fmt.Errorf("read session %q: %w", name, err)
 	}
 	sess.CreatedAt = time.Unix(created, 0)
+	sess.Context = splitContext(ctx)
 	return &sess, nil
+}
+
+// splitContext turns the stored blob back into a list, without inventing an
+// empty entry for an empty column.
+func splitContext(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	return strings.Split(raw, "\n")
 }
 
 // List returns every recorded session, oldest first.
 func (s *Store) List() ([]Session, error) {
-	rows, err := s.db.Query(`SELECT name, dir, repo, rc_url, created_at, kind, claude_session_id, system_prompt, permission_mode, model, effort, turns FROM sessions ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT name, dir, repo, rc_url, created_at, kind, claude_session_id, system_prompt, permission_mode, model, effort, context, turns FROM sessions ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -194,11 +212,13 @@ func (s *Store) List() ([]Session, error) {
 	for rows.Next() {
 		var sess Session
 		var created int64
+		var ctx string
 		if err := rows.Scan(&sess.Name, &sess.Dir, &sess.Repo, &sess.RCURL, &created, &sess.Kind, &sess.ClaudeSessionID, &sess.SystemPrompt, &sess.PermissionMode,
-			&sess.Model, &sess.Effort, &sess.Turns); err != nil {
+			&sess.Model, &sess.Effort, &ctx, &sess.Turns); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		sess.CreatedAt = time.Unix(created, 0)
+		sess.Context = splitContext(ctx)
 		out = append(out, sess)
 	}
 	return out, rows.Err()

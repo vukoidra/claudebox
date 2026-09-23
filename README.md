@@ -115,6 +115,24 @@ test exists because fakes cannot model a shell, a PATH, an installer that exits
 0 having done nothing, or Claude asking to trust a folder — every serious bug in
 this project was found by running against a real box.
 
+## Example client
+
+A Python client and a terminal app for driving the API by hand live in
+[clients/python](clients/python). Every request it makes is shown with its
+status and duration, because the point is to make the API legible rather than
+hide it.
+
+```bash
+uv run clients/python/tui.py --key "$(ssh root@<ip> cbx api-key show | cut -f2)"
+```
+
+<p align="center">
+  <img src="clients/python/screenshots/01-sessions.svg" width="800" alt="The terminal client: sessions on the left, the query form with a declared artifact on the right, and every request logged with its status and duration below." />
+</p>
+
+`clients/python/claudebox.py` has no terminal-UI imports and one dependency —
+lift it into a service as it is.
+
 ## Docs
 
 - [docs/two-binaries.md](docs/two-binaries.md) — why the split
