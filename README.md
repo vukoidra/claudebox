@@ -123,7 +123,7 @@ status and duration, because the point is to make the API legible rather than
 hide it.
 
 ```bash
-uv run clients/python/tui.py --key "$(ssh root@<ip> cbx api-key show | cut -f2)"
+uv run clients/python/tui.py --key "$(ssh root@<ip> cbx api-key list | cut -f2)"
 ```
 
 <p align="center">

@@ -25,6 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -43,6 +44,7 @@ from textual.widgets import (
     TabPane,
     TextArea,
 )
+from textual.widgets.data_table import CellDoesNotExist
 
 from claudebox import Answer, Call, ClaudeBox, ClaudeBoxError, Session, timestamped
 
@@ -52,8 +54,10 @@ from claudebox import Answer, Call, ClaudeBox, ClaudeBoxError, Session, timestam
 class NewSession(ModalScreen[dict[str, Any] | None]):
     """Everything a session is fixed with at creation.
 
-    Model, effort and permission mode live here rather than on a query
-    because Claude Code treats all three as properties of a session.
+    Model and effort live here rather than on a query because Claude Code
+    treats both as properties of a session. The permission mode is absent on
+    purpose — the key's role fixes it, and a field the server ignores would
+    read as a choice.
     """
 
     BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
@@ -66,10 +70,6 @@ class NewSession(ModalScreen[dict[str, Any] | None]):
             yield Input(placeholder="system prompt (optional)", id="system_prompt")
             yield Input(placeholder="model — opus, sonnet, opus[1m] (optional)", id="model")
             yield Input(placeholder="effort — low medium high xhigh max (optional)", id="effort")
-            yield Input(
-                placeholder="permission mode — acceptEdits auto bypassPermissions manual",
-                id="permission_mode",
-            )
             yield Input(placeholder="context — domains/x.md, clients/y.md", id="context")
             yield Input(placeholder="skills to invoke, comma separated (costs a turn each)", id="skills")
             yield Label(
@@ -108,7 +108,6 @@ class NewSession(ModalScreen[dict[str, Any] | None]):
                 "system_prompt": value("system_prompt"),
                 "model": value("model"),
                 "effort": value("effort"),
-                "permission_mode": value("permission_mode"),
                 "context": context,
                 "skills": skills,
                 "respond_within": "5m" if skills else None,
@@ -213,7 +212,6 @@ class ClaudeBoxTUI(App):
         self.box = box
         self.sessions: list[Session] = []
         self.selected: str | None = None
-        self.last_job: str | None = None
 
     # ------------------------------------------------------------------ layout
 
@@ -240,8 +238,6 @@ class ClaudeBoxTUI(App):
                         )
                         with Horizontal(classes="dialog-buttons"):
                             yield Button("Send", variant="primary", id="send")
-                            yield Button("Poll job", id="poll")
-                            yield Button("Cancel job", variant="error", id="cancel-job")
                         yield RichLog(id="answer", wrap=True, markup=True)
                 with TabPane("Artifacts", id="tab-artifacts"):
                     with Vertical(classes="pane"):
@@ -249,6 +245,17 @@ class ClaudeBoxTUI(App):
                         with Horizontal(classes="dialog-buttons"):
                             yield Button("Fetch", variant="primary", id="fetch")
                             yield Button("Save to ./out", id="save")
+                with TabPane("Jobs", id="tab-jobs"):
+                    with Vertical(classes="pane"):
+                        yield DataTable(id="job-table", cursor_type="row")
+                        yield Label(
+                            "Jobs this client started. A query that outlives its "
+                            "respond_within keeps running here and lands in Query "
+                            "when it finishes.",
+                            classes="hint",
+                        )
+                        with Horizontal(classes="dialog-buttons"):
+                            yield Button("Cancel", variant="error", id="cancel-job")
                 with TabPane("Session", id="tab-session"):
                     with VerticalScroll(classes="pane"):
                         yield Static(id="session-detail")
@@ -262,6 +269,8 @@ class ClaudeBoxTUI(App):
         table.add_columns("session", "kind", "status", "turns")
         arts = self.query_one("#artifact-table", DataTable)
         arts.add_columns("artifact", "size", "expires")
+        jobs = self.query_one("#job-table", DataTable)
+        jobs.add_columns("job", "session", "status", "waited", "prompt")
         self.check_health()
         self.action_refresh()
 
@@ -368,7 +377,6 @@ class ClaudeBoxTUI(App):
                 system_prompt=spec["system_prompt"],
                 model=spec["model"],
                 effort=spec["effort"],
-                permission_mode=spec["permission_mode"],
                 context=spec["context"],
                 skills=spec["skills"],
                 respond_within=spec["respond_within"],
@@ -441,17 +449,18 @@ class ClaudeBoxTUI(App):
         except Exception as err:
             self.call_from_thread(self.fail, err)
             return
-        self.last_job = answer.job
         self.call_from_thread(self._show_answer, answer)
         self.call_from_thread(self.load_artifacts)
         self.call_from_thread(self.action_refresh)
+        if answer.pending:
+            self.call_from_thread(self._track, answer.job, name, prompt)
 
     def _show_answer(self, answer: Answer) -> None:
         out = self.query_one("#answer", RichLog)
         if answer.pending:
             out.write(
                 f"[yellow]202[/yellow] still running — job [bold]{answer.job}[/bold]\n"
-                "The query keeps going; poll it or leave it and come back."
+                "Following it in the background; the answer lands here when it does."
             )
             return
         if answer.error:
@@ -469,27 +478,70 @@ class ClaudeBoxTUI(App):
         names = [a.strip() for a in field.value.split(",") if a.strip()] or ["report.html"]
         field.value = ", ".join(timestamped(n) for n in names)
 
-    @on(Button.Pressed, "#poll")
-    def poll(self) -> None:
-        if self.last_job:
-            self._poll(self.last_job)
-        else:
-            self.say("no job yet — send a query first")
+    # ------------------------------------------------------------------- jobs
+    #
+    # The box has no "list my jobs" endpoint, so this board is what *this*
+    # client started. Every row is being followed; the table exists so a query
+    # that outran its window stays visible instead of becoming an id in a
+    # scrolled-away log line.
 
-    @work(thread=True)
-    def _poll(self, job_id: str) -> None:
-        try:
-            job = self.box.job(job_id, respond_within="30s")
-        except Exception as err:
-            self.call_from_thread(self.fail, err)
-            return
+    def _track(self, job_id: str, session: str, prompt: str) -> None:
+        """Put a pending job on the board and start following it."""
+        table = self.query_one("#job-table", DataTable)
+        table.add_row(
+            job_id[:8], session, Text("running", style="yellow"), "0s",
+            prompt[:60] + ("\u2026" if len(prompt) > 60 else ""),
+            key=job_id,
+        )
+        self.query_one("#detail", TabbedContent).active = "tab-jobs"
+        self._follow(job_id)
+
+    @work(thread=True, group="follow")
+    def _follow(self, job_id: str) -> None:
+        """Follow a job to its end, so a 202 asks nothing further of the user.
+
+        Long-polls rather than spinning: each request is held open until the job
+        moves or 30s pass, so a half-hour turn costs about sixty requests and no
+        busy loop.
+
+        The server decides when this stops, which is also how cancelling ends
+        it \u2014 DELETE marks the job cancelled and the next poll returns that.
+        """
+        waited = 0
+        while True:
+            try:
+                job = self.box.job(job_id, respond_within="30s")
+            except Exception as err:
+                self.call_from_thread(self._settle, job_id, "lost")
+                self.call_from_thread(self.fail, err)
+                return
+            if not job.pending:
+                break
+            waited += 30
+            self.call_from_thread(self._set_cell, job_id, 3, f"{waited}s")
+        self.call_from_thread(self._settle, job_id, job.status)
         self.call_from_thread(self._show_answer, job)
         self.call_from_thread(self.load_artifacts)
+        self.call_from_thread(self.action_refresh)
+
+    def _settle(self, job_id: str, status: str) -> None:
+        self._set_cell(job_id, 2, Text(status, style="green" if status == "done" else "red"))
+
+    def _set_cell(self, job_id: str, column: int, value) -> None:
+        """A row is missing only if the board was cleared mid-poll."""
+        table = self.query_one("#job-table", DataTable)
+        try:
+            table.update_cell(job_id, table.ordered_columns[column].key, value)
+        except CellDoesNotExist:
+            pass
 
     @on(Button.Pressed, "#cancel-job")
     def cancel_job(self) -> None:
-        if self.last_job:
-            self._cancel(self.last_job)
+        table = self.query_one("#job-table", DataTable)
+        if not table.row_count:
+            self.say("no jobs \u2014 a query only makes one when it outlives its window")
+            return
+        self._cancel(str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value))
 
     @work(thread=True)
     def _cancel(self, job_id: str) -> None:
@@ -500,7 +552,7 @@ class ClaudeBoxTUI(App):
             return
         self.call_from_thread(
             self.say,
-            f"job {job_id}: {result.get('status', 'deleted')} — "
+            f"job {job_id}: {result.get('status', 'deleted')} \u2014 "
             "the session is usable again",
         )
         self.call_from_thread(self.action_refresh)

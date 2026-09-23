@@ -35,12 +35,16 @@ const (
 
 // DefaultPermissionMode is what a headless session runs as when none is named.
 //
-// Named here rather than buried in a call for the same reason
-// tmux.autonomousClaude is: it is a deliberate risk and should be visible
-// where it is taken. A query has nobody to answer a permission prompt — there
-// is no terminal and no human — so a prompting session would simply stall.
-// The box is single-tenant and owned by whoever ran cbx.
-const DefaultPermissionMode = BypassPermissions
+// acceptEdits, not bypassPermissions, and the difference is the whole
+// boundary. Measured against Claude Code 2.1.236: under bypassPermissions a
+// deny rule is ignored entirely — a session told to overwrite a protected
+// file did so — while under acceptEdits the same rule blocked it and the
+// session still wrote its own output and ran a shell command unattended.
+//
+// The original reasoning for bypassPermissions was that a query has nobody to
+// answer a prompt, so a prompting session stalls. That is true and it does not
+// require discarding every rule: acceptEdits does not prompt for edits.
+const DefaultPermissionMode = AcceptEdits
 
 // Effort levels Claude Code accepts.
 const (
@@ -91,6 +95,11 @@ type Request struct {
 	SystemPrompt string
 	// PermissionMode is empty for DefaultPermissionMode.
 	PermissionMode string
+	// SettingsPath carries the calling key's deny rules. Measured against
+	// Claude Code 2.1.236: under acceptEdits these are enforced, and under
+	// bypassPermissions they are ignored — which is why no key may carry
+	// that mode.
+	SettingsPath string
 	// Model and Effort are empty for whatever the box is configured to use.
 	Model  string
 	Effort string
@@ -126,6 +135,9 @@ func Args(r Request) []string {
 		mode = DefaultPermissionMode
 	}
 	args = append(args, "--permission-mode", mode)
+	if r.SettingsPath != "" {
+		args = append(args, "--settings", r.SettingsPath)
+	}
 	if r.Model != "" {
 		args = append(args, "--model", r.Model)
 	}

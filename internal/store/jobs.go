@@ -83,6 +83,14 @@ func migrate(db *sql.DB) error {
 	)`); err != nil {
 		return fmt.Errorf("create artifacts: %w", err)
 	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS keys (
+		label      TEXT PRIMARY KEY,
+		value      TEXT NOT NULL UNIQUE,
+		permission TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create keys: %w", err)
+	}
 	// The database enforces one query at a time per session. A mutex would be
 	// forgotten on restart, and combined with an orphaned child that is how a
 	// second --resume starts on a conversation already being written to.

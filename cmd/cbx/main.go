@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vutran1710/claudebox/internal/api"
+	"github.com/vutran1710/claudebox/internal/boxconfig"
 	"github.com/vutran1710/claudebox/internal/cbx"
 	"github.com/vutran1710/claudebox/internal/store"
 )
@@ -193,11 +194,7 @@ container's CMD; a PID 1 that forks and exits takes the container with it.`,
 				return nil
 			}
 			return withApp(func(a *cbx.App) error {
-				key, err := api.LoadOrCreateKey(api.DefaultKeyPath())
-				if err != nil {
-					return err
-				}
-				srv := api.New(a.Store, key)
+				srv := api.New(a.Store)
 				srv.Version = version
 				return srv.Serve(cmd.Context(), api.Options{Addr: addr, Out: os.Stdout})
 			})
@@ -210,38 +207,109 @@ container's CMD; a PID 1 that forks and exits takes the container with it.`,
 }
 
 func apiKeyCmd() *cobra.Command {
+	var permission string
 	cmd := &cobra.Command{
-		Use:   "api-key <show|rotate>",
-		Short: "Show or replace the API key",
-		Long: `Prints the key the API accepts, or issues a new one.
+		Use:   "api-key <list|add|permit|revoke|rotate> [label]",
+		Short: "Manage the keys that may call the API",
+		Long: `Lists, adds, revokes or rotates the keys in this box's config.
 
-Rotation takes effect immediately: the old key stops working on the next
-request, because the reason to rotate is usually that it should already have
-stopped working.`,
-		Example: "  cbx api-key show\n  cbx api-key rotate",
-		Args:    cobra.ExactArgs(1),
+A key names a permission profile, and the profile decides what its sessions
+may do — the caller never chooses. The profiles live in ` + "`~/.config/cbx/cbx.yaml`" + `
+and are edited there; the keys themselves live in the session database, so a
+caller rewriting the command allowlist can never reach them.
+
+bypassPermissions cannot be a profile: under it Claude Code ignores deny rules
+entirely, so a key carrying it would have no boundary at all.`,
+		Example: "  cbx api-key list\n" +
+			"  cbx api-key add backend\n" +
+			"  cbx api-key add reports --role readonly\n" +
+			"  cbx api-key rotate backend\n" +
+			"  cbx api-key permit backend --role readonly\n" +
+			"  cbx api-key revoke backend",
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			switch args[0] {
-			case "show":
-				key, err := api.LoadOrCreateKey(api.DefaultKeyPath())
-				if err != nil {
-					return err
-				}
-				fmt.Printf("key\t%s\n", key)
-			case "rotate":
-				key, err := api.RotateKey(api.DefaultKeyPath())
-				if err != nil {
-					return err
-				}
-				fmt.Printf("key\t%s\n", key)
-				if _, running := api.RunningPID(api.DefaultLockPath()); running {
-					fmt.Fprintln(os.Stderr, "warning: a server is running with the old key — restart it, or rotate through POST /auth/rotate instead")
-				}
-			default:
-				return fmt.Errorf("unknown api-key command %q (show, rotate)", args[0])
+			label := ""
+			if len(args) == 2 {
+				label = args[1]
 			}
-			return nil
+			needLabel := func() error {
+				if label == "" {
+					return fmt.Errorf("%s needs a label — `cbx api-key list` shows them", args[0])
+				}
+				return nil
+			}
+
+			return withApp(func(a *cbx.App) error {
+				switch args[0] {
+				case "list":
+					keys, err := a.Store.Keys()
+					if err != nil {
+						return err
+					}
+					for _, k := range keys {
+						fmt.Printf("%s\t%s\t%s\n", k.Label, k.Value, k.Permission)
+					}
+				case "add":
+					if err := needLabel(); err != nil {
+						return err
+					}
+					// Checked here so a typo is refused now, rather than
+					// turning into a 403 the first time the key is used.
+					cfg, err := boxconfig.Load(boxconfig.DefaultPath())
+					if err != nil {
+						return err
+					}
+					if _, err := cfg.Role(permission); err != nil {
+						return err
+					}
+					value, err := a.Store.AddKey(label, permission)
+					if err != nil {
+						return err
+					}
+					fmt.Printf("label\t%s\n", label)
+					fmt.Printf("permission\t%s\n", permission)
+					fmt.Printf("key\t%s\n", value)
+				case "rotate":
+					if err := needLabel(); err != nil {
+						return err
+					}
+					value, err := a.Store.RotateKey(label)
+					if err != nil {
+						return err
+					}
+					fmt.Printf("key\t%s\n", value)
+					fmt.Fprintln(os.Stderr, "the previous value stopped working immediately")
+				case "permit":
+					if err := needLabel(); err != nil {
+						return err
+					}
+					cfg, err := boxconfig.Load(boxconfig.DefaultPath())
+					if err != nil {
+						return err
+					}
+					if _, err := cfg.Role(permission); err != nil {
+						return err
+					}
+					if err := a.Store.SetPermission(label, permission); err != nil {
+						return err
+					}
+					fmt.Printf("label\t%s\npermission\t%s\n", label, permission)
+				case "revoke":
+					if err := needLabel(); err != nil {
+						return err
+					}
+					if err := a.Store.RevokeKey(label); err != nil {
+						return err
+					}
+					fmt.Printf("revoked\t%s\n", label)
+				default:
+					return fmt.Errorf("unknown api-key command %q (list, add, permit, revoke, rotate)", args[0])
+				}
+				return nil
+			})
 		},
 	}
+	cmd.Flags().StringVar(&permission, "role", "reporter",
+		"Which role from cbx.yaml this key holds")
 	return cmd
 }

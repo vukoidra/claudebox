@@ -9,10 +9,11 @@ package claudebox
 
 import _ "embed"
 
-// CommandsExample is the default slash-command allowlist: what cbx writes to a
-// box that has no spec yet, and what cbx-setuptool uploads.
+// CommandsExample is the default box policy — keys, their permissions, and
+// the slash-command allowlist. What cbx falls back to when a box has no config
+// yet, and what cbx-setuptool uploads.
 //
-//go:embed commands.example.yaml
+//go:embed cbx.example.yaml
 var CommandsExample []byte
 
 // OpenAPI describes the HTTP API. Served by `cbx serve` at /openapi.yaml and

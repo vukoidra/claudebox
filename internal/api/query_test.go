@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vutran1710/claudebox/internal/boxconfig"
 	"github.com/vutran1710/claudebox/internal/claude"
-	"github.com/vutran1710/claudebox/internal/commandspec"
 	"github.com/vutran1710/claudebox/internal/store"
 )
 
@@ -340,9 +340,13 @@ func TestAForkedSessionIdIsReportedNotSwallowed(t *testing.T) {
 
 // ---------- commands ----------
 
-func writeSpec(t *testing.T, h *harness, body string) {
+// writeSpec replaces the commands section. The roles stay, because a config
+// without them authorises nobody and every test would 403 for the wrong
+// reason.
+func writeSpec(t *testing.T, h *harness, commands string) {
 	t.Helper()
-	if err := os.WriteFile(h.SpecPath, []byte(body), 0o644); err != nil {
+	body := "version: 1\nroles:\n  tester:\n    deny: []\n" + commands
+	if err := os.WriteFile(h.ConfigPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -350,7 +354,7 @@ func writeSpec(t *testing.T, h *harness, body string) {
 func TestACommandNotInTheSpecIsRefused(t *testing.T) {
 	h := answering(t, answers("uuid-q", "x"))
 	h.headlessSession("q", "uuid-q", 1)
-	writeSpec(t, h, "version: 1\ncommands:\n  - name: /compact\n    effect: forward\n")
+	writeSpec(t, h, "commands:\n  - name: /compact\n    effect: forward\n")
 
 	w := h.do("POST", "/sessions/q/command", map[string]any{"command": "/definitely-not-allowed", "respond_within": "5s"})
 	if w.Code != http.StatusBadRequest {
@@ -361,7 +365,7 @@ func TestACommandNotInTheSpecIsRefused(t *testing.T) {
 func TestRequiresArgsIsEnforcedOverHTTP(t *testing.T) {
 	h := answering(t, answers("uuid-q", "set"))
 	h.headlessSession("q", "uuid-q", 1)
-	writeSpec(t, h, "version: 1\ncommands:\n  - name: /model\n    effect: forward\n    requires_args: true\n")
+	writeSpec(t, h, "commands:\n  - name: /model\n    effect: forward\n    requires_args: true\n")
 
 	if w := h.do("POST", "/sessions/q/command", map[string]any{"command": "/model", "respond_within": "5s"}); w.Code != http.StatusBadRequest {
 		t.Errorf("bare /model: code = %d, want 400 — it only prints its usage", w.Code)
@@ -378,7 +382,7 @@ func TestClearRotatesTheConversationInsteadOfForwarding(t *testing.T) {
 		return []byte(result("forked", "", 0)), nil
 	})
 	sess := h.headlessSession("q", "uuid-before", 4)
-	writeSpec(t, h, "version: 1\ncommands:\n  - name: /clear\n    effect: rotate-session\n")
+	writeSpec(t, h, "commands:\n  - name: /clear\n    effect: rotate-session\n")
 
 	w := h.do("POST", "/sessions/q/command", map[string]any{"command": "/clear"})
 	if w.Code != http.StatusOK {
@@ -410,25 +414,25 @@ func TestAMalformedSpecRefusesRatherThanFallingBack(t *testing.T) {
 func TestSpecIsRereadPerRequest(t *testing.T) {
 	h := answering(t, answers("uuid-q", "ok"))
 	h.headlessSession("q", "uuid-q", 1)
-	writeSpec(t, h, "version: 1\ncommands:\n  - name: /compact\n    effect: forward\n")
+	writeSpec(t, h, "commands:\n  - name: /compact\n    effect: forward\n")
 
 	if w := h.do("POST", "/sessions/q/command", map[string]any{"command": "/context", "respond_within": "5s"}); w.Code != http.StatusBadRequest {
 		t.Fatalf("expected /context to be denied first: %d", w.Code)
 	}
 	// Allowing a command is an edit, not a release.
-	writeSpec(t, h, "version: 1\ncommands:\n  - name: /context\n    effect: forward\n")
+	writeSpec(t, h, "commands:\n  - name: /context\n    effect: forward\n")
 	if w := h.do("POST", "/sessions/q/command", map[string]any{"command": "/context", "respond_within": "5s"}); w.Code != http.StatusOK {
 		t.Errorf("the spec was not re-read: %d", w.Code)
 	}
 }
 
 func TestTheShippedSpecAllowsClearByRotation(t *testing.T) {
-	spec, err := commandspec.Parse(commandspec.Default())
+	spec, err := boxconfig.Parse(boxconfig.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	c, err := spec.Resolve("/clear")
-	if err != nil || c.Effect != commandspec.RotateSession {
+	if err != nil || c.Effect != boxconfig.RotateSession {
 		t.Fatalf("/clear = %v, %v", c, err)
 	}
 }

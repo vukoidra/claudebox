@@ -1,0 +1,102 @@
+# What this box permits.
+#
+# Two sections, because there are two questions: what a caller's sessions may
+# touch, and which slash commands they may run.
+#
+# Lives at ~/.config/cbx/cbx.yaml, mode 0600. Only somebody with ssh to the box
+# should be editing it — the API can rewrite the `commands` section and nothing
+# else.
+#
+# Keys are not here. They are rows in the session database, managed with
+# `cbx api-key`, because the API rewrites this file and a credential the caller
+# can edit is not a constraint on that caller.
+
+version: 1
+
+# ----------------------------------------------------------------- roles
+#
+# A role is a set of deny rules: what the sessions created with that key are
+# refused. A key names one role, and the caller never chooses — that is the
+# point.
+#
+#   cbx api-key add backend --role reporter
+#   cbx api-key list
+#   cbx api-key permit backend --role readonly
+#   cbx api-key rotate backend
+#   cbx api-key revoke backend
+#
+# A role that says nothing about `deny` gets the defaults — the box's own
+# guide, skills and this file — because an unfinished role should not be an
+# unrestricted one. Writing `deny: []` denies nothing, and has to be done on
+# purpose.
+#
+# The rules are Claude Code permission rules, and every session runs in
+# acceptEdits, which is the only mode that both works unattended and honours
+# them. Measured against Claude Code 2.1.236: under acceptEdits a denied write
+# is refused while the session still writes its own output and runs shell
+# commands with nobody present; under bypassPermissions the same rules are
+# ignored entirely, which is why no session ever runs in it.
+
+roles:
+  # The everyday role: a session works inside its own directory and cannot
+  # reach anything that shapes other sessions.
+  reporter:
+    deny:
+      # The guide and skills are read by every future session, so one able to
+      # rewrite them could change what every later session believes.
+      - "Write(//root/.claude/**)"
+      - "Edit(//root/.claude/**)"
+      # And this file decides what every role may do.
+      - "Write(//root/.config/cbx/**)"
+      - "Edit(//root/.config/cbx/**)"
+
+  # Answers questions, changes nothing, anywhere.
+  readonly:
+    deny:
+      - "Write(//**)"
+      - "Edit(//**)"
+
+  # Says the quiet part out loud: this role's sessions may write anywhere the
+  # box's user can. Only worth issuing to something you would trust with ssh.
+  unrestricted:
+    deny: []
+
+# -------------------------------------------------------------- commands
+#
+# Which slash commands the API will run, and how. An allowlist, because it is
+# the only option available: in print mode Claude Code reports is_error: false
+# for a command that does not exist and for one that refuses to run without a
+# terminal, so there is no programmatic signal to gate on.
+#
+#   effect: forward          run it through `claude -p` and return the result
+#   effect: rotate-session   cbx performs it natively
+#   requires_args: true      refuse the bare command
+#
+# Re-read on every request, so an edit takes effect without a restart.
+
+commands:
+  - name: /clear
+    effect: rotate-session
+    description: Start a fresh conversation, discarding history
+    # Never `forward`. Forwarded, /clear reports success, silently forks a new
+    # session id, and leaves the transcript intact — verified by seeding a
+    # codeword, clearing, and being told the codeword again.
+
+  - name: /model
+    effect: forward
+    requires_args: true
+    description: Set the model for this session
+    # Bare `/model` only prints its usage and the list of available models,
+    # which reads as success while changing nothing.
+
+  - name: /compact
+    effect: forward
+    description: Compact the conversation history
+
+  - name: /context
+    effect: forward
+    description: Report what is currently in the context window
+
+  - name: /cost
+    effect: forward
+    description: Report token usage and cost for this session

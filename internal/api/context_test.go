@@ -179,7 +179,7 @@ func TestNoContextWritesNoClaudeMD(t *testing.T) {
 // changed the answer while a changed --append-system-prompt did not.
 func TestContextSurvivesTheConversationBeingCleared(t *testing.T) {
 	h := knowledge(t, map[string]string{"domains/x.md": "The site code is AC-77."})
-	writeSpec(t, h, "version: 1\ncommands:\n  - name: /clear\n    effect: rotate-session\n")
+	writeSpec(t, h, "commands:\n  - name: /clear\n    effect: rotate-session\n")
 	h.do("POST", "/sessions", map[string]any{"name": "keep", "context": []string{"domains/x.md"}})
 
 	before := claudeMD(t, h, "keep")

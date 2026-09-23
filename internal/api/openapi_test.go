@@ -109,8 +109,8 @@ func TestGetCommandsReturnsTheAllowlist(t *testing.T) {
 	if len(cmds) == 0 {
 		t.Fatalf("no commands returned: %v", got)
 	}
-	if got["path"] != h.SpecPath {
-		t.Errorf("path = %v, want %v", got["path"], h.SpecPath)
+	if got["path"] != h.ConfigPath {
+		t.Errorf("path = %v, want %v", got["path"], h.ConfigPath)
 	}
 }
 

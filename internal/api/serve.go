@@ -37,6 +37,13 @@ func (s *Server) Serve(ctx context.Context, opts Options) error {
 	}
 	defer lock.Release()
 
+	// A box provisioned before keys were listed has a value in its state
+	// directory that callers are already using. Adopting it means an upgrade
+	// does not lock them out at the moment nobody expected a change.
+	if adopted, err := adoptLegacyKey(s.Store); err == nil && adopted {
+		fmt.Fprintf(opts.Out, "adopted\tthe box's previous key, labelled \"migrated\"\n")
+	}
+
 	// Job rows outlive the claude -p children that produce them. Without this
 	// a client polling after a restart sees "running" for ever — a ghost, and
 	// a lie, since nothing is working on it. It also clears the unique index,
@@ -68,8 +75,7 @@ func (s *Server) Serve(ctx context.Context, opts Options) error {
 
 	fmt.Fprintf(opts.Out, "addr\thttp://%s\n", ln.Addr())
 	fmt.Fprintf(opts.Out, "pid\t%d\n", os.Getpid())
-	fmt.Fprintf(opts.Out, "key\t%s\n", DefaultKeyPath())
-	fmt.Fprintf(opts.Out, "commands\t%s\n", s.SpecPath)
+	fmt.Fprintf(opts.Out, "config\t%s\n", s.ConfigPath)
 
 	errc := make(chan error, 1)
 	go func() {

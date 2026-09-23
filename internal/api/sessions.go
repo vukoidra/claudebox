@@ -51,12 +51,11 @@ func view(s store.Session, running bool) sessionView {
 }
 
 type createSessionRequest struct {
-	Name           string `json:"name"`
-	Repo           string `json:"repo"`
-	SystemPrompt   string `json:"system_prompt"`
-	PermissionMode string `json:"permission_mode"`
-	Model          string `json:"model"`
-	Effort         string `json:"effort"`
+	Name         string `json:"name"`
+	Repo         string `json:"repo"`
+	SystemPrompt string `json:"system_prompt"`
+	Model        string `json:"model"`
+	Effort       string `json:"effort"`
 	// Context names knowledge files under the box's ~/.claude to give this
 	// session before its first turn.
 	Context []string `json:"context"`
@@ -76,13 +75,6 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if !sessionName.MatchString(req.Name) {
 		fail(w, http.StatusBadRequest, "name must be 1-64 characters of letters, digits, dot, dash or underscore")
-		return
-	}
-	// Refused here rather than by a child process nobody is watching.
-	if !claude.ValidPermissionMode(req.PermissionMode) {
-		fail(w, http.StatusBadRequest, fmt.Sprintf(
-			"permission_mode %q is not one of %s, %s, %s, %s",
-			req.PermissionMode, claude.AcceptEdits, claude.Auto, claude.BypassPermissions, claude.Manual))
 		return
 	}
 	if !claude.ValidEffort(req.Effort) {
@@ -148,10 +140,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		// The conversation is named now and created by the first query.
 		ClaudeSessionID: uuid.NewString(),
 		SystemPrompt:    req.SystemPrompt,
-		PermissionMode:  req.PermissionMode,
-		Model:           req.Model,
-		Effort:          req.Effort,
-		Context:         context,
+		// From the key, never from the request: a caller able to name its own
+		// permission mode could name the one that ignores every deny rule.
+		PermissionMode: caller(r).Mode(),
+		Model:          req.Model,
+		Effort:         req.Effort,
+		Context:        context,
 	}
 	if err := s.Store.Put(sess); err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())

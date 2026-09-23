@@ -97,18 +97,20 @@ token path. Everything else can be answered from environment variables.`,
 }
 
 func apiCmd() *cobra.Command {
-	var host, user string
+	var host, user, role string
 	cmd := &cobra.Command{
-		Use:   "api <install|key|rotate|forward|expose|url>",
+		Use:   "api <install|key|forward|expose|url> [args]",
 		Short: "Manage the HTTP API on the box",
 		Long: `Installs or operates the API server.
 
-  install   write the systemd unit, start it, print the key
-  key       print the key the box currently accepts
-  rotate    issue a new key and restart the server onto it
+  install   write the systemd unit, start it, print a key
+  key       manage the keys: list, add, permit, rotate, revoke
   forward   print the ssh command that reaches the API from here
   expose    open a public HTTPS tunnel and print its URL
   url       print the tunnel's current URL
+
+A key is issued against a role, and the role decides what the sessions created
+with it may touch. Roles live in the box's config file and are edited there.
 
 The API binds 127.0.0.1, so reaching it is a deliberate act. forward needs
 nothing installed and encrypts the hop, but only from a machine that can ssh
@@ -119,18 +121,21 @@ restarts, and url reads the current one.
 Either way the bearer key is the only thing standing between the internet and
 these sessions.`,
 		Example: "  cbx-setuptool api install --host 203.0.113.9\n" +
+			"  cbx-setuptool api key list   --host 203.0.113.9\n" +
+			"  cbx-setuptool api key add backend --role reporter --host 203.0.113.9\n" +
 			"  cbx-setuptool api expose --host 203.0.113.9",
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			t, err := target(host, user)
 			if err != nil {
 				return err
 			}
-			return runAPI(t, args[0])
+			return runAPI(t, args, role)
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
 	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
+	cmd.Flags().StringVar(&role, "role", "", "Role a new key is issued against (see the box's cbx.yaml)")
 	return cmd
 }
 

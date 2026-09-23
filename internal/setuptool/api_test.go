@@ -6,7 +6,7 @@ import (
 	"testing"
 	"text/template"
 
-	"github.com/vutran1710/claudebox/internal/commandspec"
+	"github.com/vutran1710/claudebox/internal/boxconfig"
 )
 
 // The unit is the part that fails silently on a real box: systemd accepts a
@@ -105,10 +105,10 @@ func TestForwardCommandTargetsThePortTheAPIBinds(t *testing.T) {
 }
 
 func TestTheShippedSpecIsWhatGetsUploaded(t *testing.T) {
-	// UploadCommandSpec sends commandspec.Default(), which is
+	// UploadCommandSpec sends boxconfig.Default(), which is
 	// commands.example.yaml at the project root. If that stopped parsing, a
 	// box would get a spec its own server refuses to load.
-	if _, err := commandspec.Parse(commandspec.Default()); err != nil {
+	if _, err := boxconfig.Parse(boxconfig.Default()); err != nil {
 		t.Fatalf("the spec shipped to boxes does not parse: %v", err)
 	}
 }

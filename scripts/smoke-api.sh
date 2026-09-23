@@ -54,13 +54,35 @@ if ! claude auth status --json 2>/dev/null | grep -q '"loggedIn": *true'; then
 fi
 ok "claude is installed and signed in"
 
+echo "--- keys and roles"
+mkdir -p "$XDG_CONFIG_HOME/cbx"
+cat > "$XDG_CONFIG_HOME/cbx/cbx.yaml" <<'YML'
+version: 1
+roles:
+  smoke:
+    deny: []
+  locked:
+    deny: ["Write(//**)", "Edit(//**)"]
+commands:
+  - name: /clear
+    effect: rotate-session
+  - name: /context
+    effect: forward
+YML
+"$CBX" api-key add smoke --role smoke >/dev/null || fail "could not add a key"
+"$CBX" api-key add locked --role locked >/dev/null || fail "could not add a second key"
+"$CBX" api-key add bad --role nonexistent >/dev/null 2>&1 && fail "a key naming an undefined role was accepted"
+ok "keys are added against a role, and an undefined role is refused"
+
 echo "--- starting the API"
 "$CBX" serve --detach --addr "127.0.0.1:$PORT" >/dev/null
 for _ in $(seq 1 25); do
   curl -sf "$BASE/healthz" >/dev/null 2>&1 && break
   sleep 0.4
 done
-KEY="$("$CBX" api-key show | cut -f2)"
+# By label, not by position: the box lists more than one key and the other one
+# is deliberately forbidden from writing anything.
+KEY="$("$CBX" api-key list | grep '^smoke' | cut -f2)"
 [ -n "$KEY" ] || fail "no API key"
 ok "serving on $BASE"
 
@@ -89,11 +111,16 @@ api POST /sessions -d '{"name":"smoke","system_prompt":"Answer in as few words a
 ok "create"
 [ "$(code POST /sessions -d '{"name":"smoke"}')" = "409" ] || fail "a duplicate name was accepted"
 ok "a duplicate name is refused"
-[ "$(code POST /sessions -d '{"name":"bad","permission_mode":"yolo"}')" = "400" ] \
-  || fail "an invalid permission mode was accepted"
 [ "$(code POST /sessions -d '{"name":"bad","model":"--dangerously-skip-permissions"}')" = "400" ] \
   || fail "a model name that claude would read as a flag was accepted"
-ok "invalid permission mode and flag-shaped model refused"
+ok "a flag-shaped model name is refused"
+# The role decides, and a caller naming a mode is simply not listened to —
+# under bypassPermissions Claude Code ignores deny rules entirely.
+api POST /sessions -d '{"name":"chosen","permission_mode":"bypassPermissions"}' \
+  | grep -q '"permission_mode":"acceptEdits"' \
+  || fail "a caller chose its own permission mode"
+ok "a caller cannot choose its own permission mode"
+api DELETE /sessions/chosen >/dev/null
 
 echo "--- a real query"
 STAMP="report-$(date -u +%Y%m%dT%H%M%SZ).html"
@@ -105,6 +132,10 @@ JSON
 )")"
 echo "$ANSWER" | grep -q '"status":"done"' || fail "the query did not finish: $ANSWER"
 ok "claude -p answered over HTTP"
+# A query can finish while the work it was asked to do was refused — the
+# session says so in its answer and the status is still done. Assert the file.
+[ -f "$HOME/workspace/smoke/$STAMP" ] || fail "the session did not write the file it was asked for"
+ok "the file it was asked for exists"
 
 echo "--- artifacts"
 api GET "/sessions/smoke/artifacts" | grep -q "$STAMP" || fail "the declared artifact was not registered"
@@ -161,6 +192,30 @@ api DELETE /sessions/smoke >/dev/null
 [ -d "$DIR" ] || fail "delete removed the working directory — it must not"
 ok "delete forgets the session and keeps the work"
 rm -rf "$DIR"
+
+echo "--- a role's deny rules reach the session"
+GUARD="$WORK/guarded"; mkdir -p "$GUARD"; echo "ORIGINAL" > "$GUARD/policy.md"
+LOCKED="$("$CBX" api-key list | grep '^locked' | cut -f2)"
+api POST /sessions -d '{"name":"locked-demo"}' >/dev/null
+curl -sS -X POST -H "Authorization: Bearer $LOCKED" -H "Content-Type: application/json" \
+  -d "{\"prompt\":\"Overwrite $GUARD/policy.md so it contains exactly: SUBVERTED. Then reply DONE.\",\"respond_within\":\"3m\"}" \
+  "$BASE/sessions/locked-demo/query" >/dev/null
+[ "$(cat "$GUARD/policy.md")" = "ORIGINAL" ] || fail "a denied write went through"
+ok "a role's deny rules stop a session writing outside itself"
+api DELETE /sessions/locked-demo >/dev/null
+
+echo "--- the example client"
+# The shipped client against the same box: a library that cannot make the
+# calls this script just made is a broken example, and nothing else notices.
+if command -v uv >/dev/null 2>&1; then
+  CLIENT_OUT="$(CBX_URL="$BASE" CBX_KEY="$KEY" uv run --quiet --with httpx \
+    python "$ROOT/scripts/smoke-client.py" 2>&1)" || fail "the example client failed:
+$CLIENT_OUT"
+  echo "$CLIENT_OUT" | sed 's/^/  ok   /'
+  rm -rf "$HOME/workspace/smoke-client"
+else
+  echo "  --   skipped: uv is not installed"
+fi
 
 echo "--- key rotation"
 NEW="$(api POST /auth/rotate | sed -n 's/.*"api_key":"\([^"]*\)".*/\1/p')"
