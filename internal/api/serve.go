@@ -10,6 +10,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/vutran1710/claudebox/internal/workspace"
 )
 
 // DefaultAddr binds loopback only.
@@ -36,6 +38,16 @@ func (s *Server) Serve(ctx context.Context, opts Options) error {
 		return err
 	}
 	defer lock.Release()
+
+	// Before accepting a request: every session this server creates writes
+	// here, so a root nobody can write is a server that answers every query
+	// with a failure three steps into the work. Said once, at startup, naming
+	// the directory and the user.
+	root, err := workspace.Ensure()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(opts.Out, "workspace\t%s\n", root)
 
 	// A box provisioned before keys were listed has a value in its state
 	// directory that callers are already using. Adopting it means an upgrade

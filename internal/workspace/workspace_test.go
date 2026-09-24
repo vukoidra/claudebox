@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -123,7 +125,11 @@ func TestRootIgnoresASharedWorkspace(t *testing.T) {
 	}
 }
 
-func TestRootFallsBackWhenItCannotWriteItsWorkspace(t *testing.T) {
+// There is no fallback. Everything else cbx owns lives in this home — the
+// database, the config, the knowledge — so a home that cannot be written is a
+// box that cannot run, and a second location would only move the failure
+// somewhere harder to see.
+func TestEnsureRefusesAWorkspaceItCannotWrite(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes through any mode")
 	}
@@ -135,13 +141,39 @@ func TestRootFallsBackWhenItCannotWriteItsWorkspace(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(locked, 0o755) })
 
-	if got, want := Root(), filepath.Join(home, ".claude"); got != want {
-		t.Errorf("Root() = %q, want the fallback %q", got, want)
+	got, err := Ensure()
+	if err == nil {
+		t.Fatalf("Ensure() returned %q for a directory it cannot write", got)
+	}
+	// The fix is to chown the directory or run as whoever owns it, so the
+	// message has to name both.
+	if !strings.Contains(err.Error(), locked) {
+		t.Errorf("the error does not name the directory: %v", err)
+	}
+	if u, uerr := user.Current(); uerr == nil && !strings.Contains(err.Error(), u.Username) {
+		t.Errorf("the error does not name the user: %v", err)
 	}
 }
 
-// Root returning a path nothing can write is the failure this is all about,
-// so every outcome is checked by actually using it.
+// Existence is not the question: a directory owned by someone else looks fine
+// to Stat and refuses every write afterwards.
+func TestEnsureMakesTheWorkspaceWhenItIsMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := Ensure()
+	if err != nil {
+		t.Fatalf("Ensure(): %v", err)
+	}
+	if want := filepath.Join(home, "workspace"); got != want {
+		t.Errorf("Ensure() = %q, want %q", got, want)
+	}
+	if info, err := os.Stat(got); err != nil || !info.IsDir() {
+		t.Errorf("the workspace was not created: %v", err)
+	}
+}
+
+// Ensure reporting success on a path nothing can write is the failure this is
+// all about, so both outcomes are checked by actually using it.
 func TestRootReturnsSomethingPrepareCanUse(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes through any mode")
@@ -150,8 +182,8 @@ func TestRootReturnsSomethingPrepareCanUse(t *testing.T) {
 		name string
 		lock bool
 	}{
-		{"the default", false},
-		{"the fallback", true},
+		{"a usable workspace", false},
+		{"one that cannot be written", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -164,9 +196,19 @@ func TestRootReturnsSomethingPrepareCanUse(t *testing.T) {
 				}
 				t.Cleanup(func() { os.Chmod(locked, 0o755) })
 			}
-			dir := filepath.Join(Root(), "a-project")
+			root, err := Ensure()
+			if c.lock {
+				if err == nil {
+					t.Fatalf("Ensure() returned %q for an unwritable workspace", root)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Ensure(): %v", err)
+			}
+			dir := filepath.Join(root, "a-project")
 			if err := Prepare(dir, ""); err != nil {
-				t.Fatalf("Prepare under %s: %v", Root(), err)
+				t.Fatalf("Prepare under %s: %v", root, err)
 			}
 			if _, err := os.Stat(dir); err != nil {
 				t.Errorf("the project directory is not there: %v", err)

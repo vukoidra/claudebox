@@ -11,49 +11,58 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-// Root is where project directories live: ~/workspace, falling back to
-// ~/.claude when that cannot be written.
+// Root is where project directories live: ~/workspace.
 //
 // Never /workspace. A box runs its sessions as the user it was provisioned
-// with, not as root, so a directory at the filesystem root is one nobody can
-// write — and choosing it on existence alone, as this once did, fails at the
-// session's first write rather than here.
+// with, not as root, so a directory at the filesystem root is one they cannot
+// write — and choosing it on existence, as this once did, failed at the
+// session's first write rather than at startup.
 //
-// The fallback sits under ~/.claude, which a role's deny rules may cover. A
-// session that lands there under a restrictive role is refused its own output;
-// the fallback exists for a box whose home is otherwise unusable, which is a
-// broken box either way.
+// Pure: the path, with no claim that it works. Ensure is what checks.
 func Root() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), "workspace")
 	}
-	if dir := filepath.Join(home, "workspace"); writable(dir) {
-		return dir
-	}
-	return filepath.Join(home, ".claude")
+	return filepath.Join(home, "workspace")
 }
 
-// writable reports whether dir can hold a project directory, creating it if
-// it is not there. Existence is not the question — the failure this answers is
-// a directory owned by someone else, which looks fine to Stat and refuses
-// every write afterwards.
-func writable(dir string) bool {
+// Ensure returns the root, having made it usable, or explains why it is not.
+//
+// There is no fallback. Everything else cbx owns already lives in this home —
+// the database, the config, the knowledge, each key's settings — so a home
+// that cannot be written is a box that cannot run, and a second location would
+// only move the failure somewhere harder to see.
+//
+// Written to rather than stat'd: a directory owned by someone else looks fine
+// to Stat and refuses every write afterwards.
+func Ensure() (string, error) {
+	dir := Root()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false
+		return "", fmt.Errorf("%s cannot be created: %w", dir, err)
 	}
 	probe, err := os.CreateTemp(dir, ".cbx-probe-*")
 	if err != nil {
-		return false
+		return "", fmt.Errorf("%s is not writable by %s: %w", dir, currentUser(), err)
 	}
 	probe.Close()
 	os.Remove(probe.Name())
-	return true
+	return dir, nil
+}
+
+// currentUser names who the failing process is, since the fix is usually to
+// chown the directory to them or to run as whoever owns it.
+func currentUser() string {
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return fmt.Sprintf("uid %d", os.Geteuid())
 }
 
 // Prepare makes a project directory ready: cloned, existing, or new.
