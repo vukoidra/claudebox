@@ -417,7 +417,7 @@ travels, and now defaults to naming `rules` too, which was missing entirely.
 
 ## `migrate` takes a directory and a filter
 
-`cbx-setuptool migrate --claude-dir <dir> --filter skills,rules,agents`.
+`cbx-setuptool migrate --path <dir> --filter skills,rules,agents`.
 
 Neither was configurable before: the source was hardcoded to `~/.claude` and
 the contents to a list in the source. A machine may keep more than one Claude
@@ -458,3 +458,26 @@ parses it gets validated, and quoting answers a different question.
 **Wrong if** boxes ever need to run a build that is not published, routinely
 rather than while testing — at which point the upload path should become the
 default again rather than growing a second downloader.
+
+## Nothing is copied to a box unless someone named it
+
+`--path` is required on `migrate`, and `setup` copies no Claude configuration
+unless it is given one. There is no default.
+
+The default used to be `~/.claude`, and `setup` ran `migrate` on every
+invocation with no way to opt out. Pointed at a real machine that meant 375
+files of one person's skills arriving on a server shared with six colleagues
+and a CI runner — not because anyone decided to publish them, but because
+nobody had said not to.
+
+A default is a decision made by whoever wrote the code, on behalf of whoever
+runs it, about a machine neither of them is looking at. For what a box knows,
+that is the wrong place for the decision to live.
+
+`Plan("")` refuses rather than the CLI checking, so the rule holds for callers
+that do not exist yet, and `DefaultClaudeDir` was deleted rather than left
+unused.
+
+**Wrong if** a box is ever provisioned unattended at scale, where naming the
+directory every time is friction rather than intent — and the answer then is a
+config file that names it once, not a fallback that guesses.

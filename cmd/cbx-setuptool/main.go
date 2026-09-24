@@ -254,8 +254,8 @@ empty. A symlink to a directory is reported, not followed.`,
 	return cmd
 }
 
-// expandHome resolves a leading ~ so --claude-dir ~/x works when a shell has
-// not already done it.
+// expandHome resolves a leading ~ so --path ~/x works when a shell has not
+// already done it.
 func expandHome(path string) (string, error) {
 	if path == "" || !strings.HasPrefix(path, "~") {
 		return path, nil
