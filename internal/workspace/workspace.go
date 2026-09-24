@@ -16,18 +16,44 @@ import (
 	"strings"
 )
 
-// Root is where project directories live. /workspace on a box that has one,
-// otherwise ~/workspace — a laptop has no writable /workspace, and cbx must be
-// runnable there.
+// Root is where project directories live: ~/workspace, falling back to
+// ~/.claude when that cannot be written.
+//
+// Never /workspace. A box runs its sessions as the user it was provisioned
+// with, not as root, so a directory at the filesystem root is one nobody can
+// write — and choosing it on existence alone, as this once did, fails at the
+// session's first write rather than here.
+//
+// The fallback sits under ~/.claude, which a role's deny rules may cover. A
+// session that lands there under a restrictive role is refused its own output;
+// the fallback exists for a box whose home is otherwise unusable, which is a
+// broken box either way.
 func Root() string {
-	if info, err := os.Stat("/workspace"); err == nil && info.IsDir() {
-		return "/workspace"
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "/workspace"
+		return filepath.Join(os.TempDir(), "workspace")
 	}
-	return filepath.Join(home, "workspace")
+	if dir := filepath.Join(home, "workspace"); writable(dir) {
+		return dir
+	}
+	return filepath.Join(home, ".claude")
+}
+
+// writable reports whether dir can hold a project directory, creating it if
+// it is not there. Existence is not the question — the failure this answers is
+// a directory owned by someone else, which looks fine to Stat and refuses
+// every write afterwards.
+func writable(dir string) bool {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false
+	}
+	probe, err := os.CreateTemp(dir, ".cbx-probe-*")
+	if err != nil {
+		return false
+	}
+	probe.Close()
+	os.Remove(probe.Name())
+	return true
 }
 
 // Prepare makes a project directory ready: cloned, existing, or new.

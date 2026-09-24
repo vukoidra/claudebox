@@ -55,7 +55,7 @@ All sessions go through `cbx serve`:
 # Via API (from phone, another service, or the master session)
 POST http://cbx-serve-url/sessions
   { "name": "my-project", "repo": "owner/repo" }
-  → { "name": "my-project", "dir": "/workspace/my-project", "status": "created" }
+  → { "name": "my-project", "dir": "/home/box/workspace/my-project", "status": "created" }
 
 # Via CLI (from SSH)
 cbx code my-project --repo owner/repo

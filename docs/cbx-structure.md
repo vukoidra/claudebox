@@ -123,7 +123,7 @@ type ResolveResult struct {
     Status string   // cloned, found, created
 }
 
-// Clones when repo is set, otherwise finds or creates /workspace/<name>.
+// Clones when repo is set, otherwise finds or creates ~/workspace/<name>.
 // Hands the directory to the claude user, since sessions run as that user.
 func Resolve(name, repo string) (*ResolveResult, error)
 func ResolveIn(root, name, repo string) (*ResolveResult, error)

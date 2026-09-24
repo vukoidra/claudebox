@@ -93,3 +93,84 @@ func TestPrepareRefusesToCloneOverExistingWork(t *testing.T) {
 		t.Error("cloned into a non-empty directory — that would bury someone's work")
 	}
 }
+
+// --- Root ---
+//
+// A box runs its sessions as the user it was provisioned with, so where
+// project directories live has to be somewhere that user can write. This went
+// untested while Root chose /workspace on existence alone, which looks fine to
+// Stat and refuses every write afterwards.
+
+func TestRootIsTheUsersWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got, want := Root(), filepath.Join(home, "workspace"); got != want {
+		t.Errorf("Root() = %q, want %q", got, want)
+	}
+}
+
+// Pins the decision, so nobody reintroduces the shared path as an
+// optimisation: a directory at the filesystem root is one the session user
+// does not own.
+func TestRootIgnoresASharedWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if _, err := os.Stat("/workspace"); err == nil {
+		t.Log("/workspace exists on this machine, which is the case worth checking")
+	}
+	if got := Root(); got == "/workspace" {
+		t.Error("Root() chose /workspace")
+	}
+}
+
+func TestRootFallsBackWhenItCannotWriteItsWorkspace(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through any mode")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	locked := filepath.Join(home, "workspace")
+	if err := os.Mkdir(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+
+	if got, want := Root(), filepath.Join(home, ".claude"); got != want {
+		t.Errorf("Root() = %q, want the fallback %q", got, want)
+	}
+}
+
+// Root returning a path nothing can write is the failure this is all about,
+// so every outcome is checked by actually using it.
+func TestRootReturnsSomethingPrepareCanUse(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through any mode")
+	}
+	cases := []struct {
+		name string
+		lock bool
+	}{
+		{"the default", false},
+		{"the fallback", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if c.lock {
+				locked := filepath.Join(home, "workspace")
+				if err := os.Mkdir(locked, 0o555); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Chmod(locked, 0o755) })
+			}
+			dir := filepath.Join(Root(), "a-project")
+			if err := Prepare(dir, ""); err != nil {
+				t.Fatalf("Prepare under %s: %v", Root(), err)
+			}
+			if _, err := os.Stat(dir); err != nil {
+				t.Errorf("the project directory is not there: %v", err)
+			}
+		})
+	}
+}
