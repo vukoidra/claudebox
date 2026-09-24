@@ -127,31 +127,32 @@ bootstraps master by invoking `cbx new master` rather than reimplementing it.
 
 ## What this deletes
 
-- `cbx serve`, the HTTP API, its Cloudflare tunnel, its API key, and
-  `cbx show api-key`. The master session plus SSH are the control paths.
+- `cbx show api-key`, and the API key file it read. Keys are rows in the
+  session database now, each issued against a role, and `cbx api-key` manages
+  them.
+
+  `cbx serve` and the HTTP API were deleted here and later rebuilt, when a
+  backend needed to drive sessions without a person in the loop. What came
+  back is not what went away: bearer auth against keys in the database, an
+  allowlist for slash commands, declared artifacts, and jobs for work that
+  outlives its request. `docs/api-server.md` is the record.
 - `cbx activate`. It spawned a session, which `cbx new` does.
 - `--headless`. `cbx` has no other mode.
 - `cbx setup --ip`. `cbx-setuptool` always targets a remote.
 
 ## Open questions
 
-1. **Is SQLite worth the dependency?** It solves concurrent writes correctly,
-   which we demonstrably get wrong by hand. But `modernc.org/sqlite` is a large
-   pure-Go dependency for a project with three, and cgo `mattn/go-sqlite3`
-   complicates cross-compiling the linux binary from a Mac — which is how
-   releases are built today.
-2. **What exactly are "rules"?** `CLAUDE.md` alone, or also `settings.json`
-   hooks, agents, and `.claude/` directories inside each workspace project?
-   Export is only useful if it captures everything that shapes a session.
-3. **Does `cbx export` have an `import` counterpart?** If the db and rules can
-   be exported for backup, something has to restore them, and that is either
-   `cbx import` or a `cbx-setuptool` job.
-4. **How does `cbx-setuptool` reach the laptop?** `go install`, a release
-   binary, or Homebrew. `cbx` is installed on the box by cloud-init as now.
-5. **Does `cbx` need `--json`?** One-fact-per-line may be enough for an agent;
-   JSON is easy to add and hard to remove.
-6. **Does `resume` mean reattach, or restart a dead session?** They are
+Most of the original list is settled: SQLite is in, through the pure-Go
+`modernc.org/sqlite`, which is what keeps `CGO_ENABLED=0` cross-compilation
+working; "rules" means whatever `migrate --filter` names, defaulting to skills,
+rules and agents; and `cbx-setuptool` reaches a laptop as a release binary.
+
+What is still open:
+
+1. **Does `cbx export` have an `import` counterpart?** The database and rules
+   can be exported; nothing restores them. Until something does, the backup is
+   only half a backup.
+2. **Does `cbx` need `--json`?** One tab-separated fact per line has been
+   enough for every caller so far. JSON is easy to add and hard to remove.
+3. **Does `resume` mean reattach, or restart a dead session?** They are
    different commands if a session can die.
-7. **Does VNC survive?** It is a setuptool concern either way, but three
-   browser stacks are installed today (Agent Browser, Playwright, VNC's
-   Chromium) and at most one is load-bearing.

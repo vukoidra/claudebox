@@ -9,7 +9,7 @@ You can manage the server using `cbx` commands:
 
 ```bash
 cbx code --headless my-app --repo owner/repo   # Clone repo and start session
-cbx code --headless my-app                     # Find or create /workspace/my-app
+cbx code --headless my-app                     # Find or create ~/workspace/my-app
 cbx activate                                   # Start the master session (no-op if up)
 cbx status                                     # Show health of all services and sessions
 ```
@@ -38,11 +38,13 @@ Each `cbx code` returns a Remote Control URL — share it with the user.
 
 ## Workspace
 
-All projects should be cloned into `/workspace`.
+All projects live under `~/workspace`. Never `/workspace`: sessions run as the
+user the box was provisioned with, not as root, so a directory at the
+filesystem root is one they cannot write.
 
 ## Web App Development Workflow
 
-1. Clone a repo into `/workspace`
+1. Clone a repo into `~/workspace`
 2. Install dependencies and start the dev server
 3. Use `agent-browser` to navigate, interact, and screenshot the app
 4. Use `wormhole` to share the dev server URL for external testing

@@ -11,23 +11,58 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-// Root is where project directories live. /workspace on a box that has one,
-// otherwise ~/workspace — a laptop has no writable /workspace, and cbx must be
-// runnable there.
+// Root is where project directories live: ~/workspace.
+//
+// Never /workspace. A box runs its sessions as the user it was provisioned
+// with, not as root, so a directory at the filesystem root is one they cannot
+// write — and choosing it on existence, as this once did, failed at the
+// session's first write rather than at startup.
+//
+// Pure: the path, with no claim that it works. Ensure is what checks.
 func Root() string {
-	if info, err := os.Stat("/workspace"); err == nil && info.IsDir() {
-		return "/workspace"
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "/workspace"
+		return filepath.Join(os.TempDir(), "workspace")
 	}
 	return filepath.Join(home, "workspace")
+}
+
+// Ensure returns the root, having made it usable, or explains why it is not.
+//
+// There is no fallback. Everything else cbx owns already lives in this home —
+// the database, the config, the knowledge, each key's settings — so a home
+// that cannot be written is a box that cannot run, and a second location would
+// only move the failure somewhere harder to see.
+//
+// Written to rather than stat'd: a directory owned by someone else looks fine
+// to Stat and refuses every write afterwards.
+func Ensure() (string, error) {
+	dir := Root()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("%s cannot be created: %w", dir, err)
+	}
+	probe, err := os.CreateTemp(dir, ".cbx-probe-*")
+	if err != nil {
+		return "", fmt.Errorf("%s is not writable by %s: %w", dir, currentUser(), err)
+	}
+	probe.Close()
+	os.Remove(probe.Name())
+	return dir, nil
+}
+
+// currentUser names who the failing process is, since the fix is usually to
+// chown the directory to them or to run as whoever owns it.
+func currentUser() string {
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return fmt.Sprintf("uid %d", os.Geteuid())
 }
 
 // Prepare makes a project directory ready: cloned, existing, or new.

@@ -124,7 +124,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir := filepath.Join(workspace.Root(), req.Name)
+	root, err := workspace.Ensure()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	dir := filepath.Join(root, req.Name)
 	if err := workspace.Prepare(dir, req.Repo); err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return

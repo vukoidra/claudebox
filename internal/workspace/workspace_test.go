@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +93,126 @@ func TestPrepareRefusesToCloneOverExistingWork(t *testing.T) {
 	}
 	if err := Prepare(dir, "owner/repo"); err == nil {
 		t.Error("cloned into a non-empty directory — that would bury someone's work")
+	}
+}
+
+// --- Root ---
+//
+// A box runs its sessions as the user it was provisioned with, so where
+// project directories live has to be somewhere that user can write. This went
+// untested while Root chose /workspace on existence alone, which looks fine to
+// Stat and refuses every write afterwards.
+
+func TestRootIsTheUsersWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got, want := Root(), filepath.Join(home, "workspace"); got != want {
+		t.Errorf("Root() = %q, want %q", got, want)
+	}
+}
+
+// Pins the decision, so nobody reintroduces the shared path as an
+// optimisation: a directory at the filesystem root is one the session user
+// does not own.
+func TestRootIgnoresASharedWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if _, err := os.Stat("/workspace"); err == nil {
+		t.Log("/workspace exists on this machine, which is the case worth checking")
+	}
+	if got := Root(); got == "/workspace" {
+		t.Error("Root() chose /workspace")
+	}
+}
+
+// There is no fallback. Everything else cbx owns lives in this home — the
+// database, the config, the knowledge — so a home that cannot be written is a
+// box that cannot run, and a second location would only move the failure
+// somewhere harder to see.
+func TestEnsureRefusesAWorkspaceItCannotWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through any mode")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	locked := filepath.Join(home, "workspace")
+	if err := os.Mkdir(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+
+	got, err := Ensure()
+	if err == nil {
+		t.Fatalf("Ensure() returned %q for a directory it cannot write", got)
+	}
+	// The fix is to chown the directory or run as whoever owns it, so the
+	// message has to name both.
+	if !strings.Contains(err.Error(), locked) {
+		t.Errorf("the error does not name the directory: %v", err)
+	}
+	if u, uerr := user.Current(); uerr == nil && !strings.Contains(err.Error(), u.Username) {
+		t.Errorf("the error does not name the user: %v", err)
+	}
+}
+
+// Existence is not the question: a directory owned by someone else looks fine
+// to Stat and refuses every write afterwards.
+func TestEnsureMakesTheWorkspaceWhenItIsMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := Ensure()
+	if err != nil {
+		t.Fatalf("Ensure(): %v", err)
+	}
+	if want := filepath.Join(home, "workspace"); got != want {
+		t.Errorf("Ensure() = %q, want %q", got, want)
+	}
+	if info, err := os.Stat(got); err != nil || !info.IsDir() {
+		t.Errorf("the workspace was not created: %v", err)
+	}
+}
+
+// Ensure reporting success on a path nothing can write is the failure this is
+// all about, so both outcomes are checked by actually using it.
+func TestRootReturnsSomethingPrepareCanUse(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through any mode")
+	}
+	cases := []struct {
+		name string
+		lock bool
+	}{
+		{"a usable workspace", false},
+		{"one that cannot be written", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if c.lock {
+				locked := filepath.Join(home, "workspace")
+				if err := os.Mkdir(locked, 0o555); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { os.Chmod(locked, 0o755) })
+			}
+			root, err := Ensure()
+			if c.lock {
+				if err == nil {
+					t.Fatalf("Ensure() returned %q for an unwritable workspace", root)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Ensure(): %v", err)
+			}
+			dir := filepath.Join(root, "a-project")
+			if err := Prepare(dir, ""); err != nil {
+				t.Fatalf("Prepare under %s: %v", root, err)
+			}
+			if _, err := os.Stat(dir); err != nil {
+				t.Errorf("the project directory is not there: %v", err)
+			}
+		})
 	}
 }
