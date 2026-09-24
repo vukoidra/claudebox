@@ -3,6 +3,7 @@ package setuptool
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -177,5 +178,18 @@ func TestAnEmptyFilterUsesTheDefault(t *testing.T) {
 	}
 	if _, ok := got["projects"]; ok {
 		t.Error("the default filter carried projects/")
+	}
+}
+
+// No default. Defaulting to ~/.claude copies whoever ran the tool's personal
+// configuration onto a machine other people share, without anyone saying so —
+// and it did, from `setup`, every time.
+func TestPlanRefusesToGuessWhichDirectoryToCopy(t *testing.T) {
+	_, _, err := Plan("", nil)
+	if err == nil {
+		t.Fatal("an empty directory was accepted, so something was copied by omission")
+	}
+	if !strings.Contains(err.Error(), "--path") {
+		t.Errorf("the error does not say how to fix it: %v", err)
 	}
 }

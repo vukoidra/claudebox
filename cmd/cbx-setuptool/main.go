@@ -55,7 +55,7 @@ func target(host, user string) (setuptool.Target, error) {
 }
 
 func setupCmd() *cobra.Command {
-	var host, user, binary, cbxVersion string
+	var host, user, binary, cbxVersion, claudePath string
 	var with []string
 	var skipAuth, skipClaude, withAPI bool
 
@@ -68,10 +68,14 @@ func setupCmd() *cobra.Command {
   2. install cbx — downloaded from a release, or uploaded with --binary
   3. sign Claude Code in — interactive, you complete it in a browser
   4. authenticate gh / vercel / supabase from tokens
-  5. copy your skills, agents and settings across
+  5. copy a Claude configuration directory across, if --path names one
 
 Each step is skipped if it is already done, so re-running is cheap and safe
 after a failure.
+
+--path names the Claude configuration directory to copy to the box. Without
+it nothing is copied: the obvious default, ~/.claude, is personal, and putting
+it on a machine other people share is not something to do by omission.
 
 --with names the optional tools: node, "github cli", "vercel cli",
 "supabase cli". Naming none gives the base box. They can be added later by
@@ -93,13 +97,14 @@ privileged steps go through sudo, which is checked before the first one runs.`,
 			if err != nil {
 				return err
 			}
-			return runSetup(t, binary, cbxVersion, with, skipAuth, skipClaude, withAPI)
+			return runSetup(t, binary, cbxVersion, claudePath, with, skipAuth, skipClaude, withAPI)
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
 	cmd.Flags().StringVar(&user, "user", "", "SSH user (default root; or write it as user@host)")
 	cmd.Flags().StringVar(&binary, "binary", "", "Upload this locally built linux cbx instead of downloading a release (for testing an unreleased build)")
 	cmd.Flags().StringVar(&cbxVersion, "cbx-version", "", "Release tag of cbx to install (default: this tool's own version, or the latest release)")
+	cmd.Flags().StringVar(&claudePath, "path", "", "Claude configuration directory to copy to the box (default: copy nothing)")
 	cmd.Flags().StringSliceVar(&with, "with", nil, `Optional tools to install: node, "github cli", "vercel cli", "supabase cli" (default: none)`)
 	cmd.Flags().BoolVar(&skipAuth, "skip-auth", false, "Skip the CLI token prompts")
 	cmd.Flags().BoolVar(&skipClaude, "skip-claude-login", false, "Install everything but leave Claude Code signed out (sign in later with another setup run)")
@@ -187,16 +192,17 @@ token path. Use setup for that.`,
 }
 
 func migrateCmd() *cobra.Command {
-	var host, user, claudeDir string
+	var host, user, path string
 	var filter []string
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Copy local Claude config to the box",
 		Long: `Copies the parts of a Claude configuration directory that shape a session.
 
---claude-dir names the directory to copy from, defaulting to ~/.claude. It is
-a flag rather than a fixed path because a machine may keep more than one, and
-the one worth shipping to a box is not always the one Claude Code reads here.
+--path names the directory to copy from, and is required. There is no default:
+the obvious one, ~/.claude, is personal, and copying it onto a machine other
+people share is not something to do by omission. What ships to a box is a
+decision, so it has to be written down.
 
 --filter names what to copy, relative to that directory. Entries may be
 directories or files. The default is:
@@ -214,16 +220,18 @@ calling binaries the box lacks are dropped and reported.
 Symlinks are followed when they point at a file, so a configuration directory
 whose entries link into a dotfiles repository migrates rather than arriving
 empty. A symlink to a directory is reported, not followed.`,
-		Example: "  cbx-setuptool migrate --host 203.0.113.9\n" +
-			"  cbx-setuptool migrate --host 203.0.113.9 --filter skills,rules,agents\n" +
-			"  cbx-setuptool migrate --host 203.0.113.9 --claude-dir ~/dotfiles/claude",
+		Example: "  cbx-setuptool migrate --host 203.0.113.9 --path ./claude\n" +
+			"  cbx-setuptool migrate --host 203.0.113.9 --path ~/dotfiles/claude --filter skills,rules,agents",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			t, err := target(host, user)
 			if err != nil {
 				return err
 			}
-			dir, err := expandHome(claudeDir)
+			if path == "" {
+				return fmt.Errorf("--path is required: name the Claude configuration directory to copy")
+			}
+			dir, err := expandHome(path)
 			if err != nil {
 				return err
 			}
@@ -241,13 +249,13 @@ empty. A symlink to a directory is reported, not followed.`,
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
 	cmd.Flags().StringVar(&user, "user", "", "SSH user (default root; or write it as user@host)")
-	cmd.Flags().StringVar(&claudeDir, "claude-dir", "", "Local Claude directory to copy from (default ~/.claude)")
+	cmd.Flags().StringVar(&path, "path", "", "Local Claude configuration directory to copy (required)")
 	cmd.Flags().StringSliceVar(&filter, "filter", nil, "What to copy, comma-separated (default skills,agents,rules,settings.json,plugins manifest)")
 	return cmd
 }
 
-// expandHome resolves a leading ~ so --claude-dir ~/x works when a shell has
-// not already done it.
+// expandHome resolves a leading ~ so --path ~/x works when a shell has not
+// already done it.
 func expandHome(path string) (string, error) {
 	if path == "" || !strings.HasPrefix(path, "~") {
 		return path, nil

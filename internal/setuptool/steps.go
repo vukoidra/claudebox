@@ -322,9 +322,9 @@ func checkELF(path string) error {
 
 // MigrateOptions is what to copy, and from where.
 type MigrateOptions struct {
-	// Dir is the local configuration directory. Empty means ~/.claude.
-	// Not fixed, because a machine may keep more than one, and the one worth
-	// shipping to a box is not always the one Claude Code reads here.
+	// Dir is the local configuration directory to copy. Required: there is no
+	// default, because the obvious one — ~/.claude — is personal, and copying
+	// it onto a shared machine is not something to do by omission.
 	Dir string
 	// Only names what to copy, relative to Dir. Empty means DefaultFilter.
 	Only []string
@@ -348,15 +348,6 @@ type Copied struct {
 	Files int
 }
 
-// DefaultClaudeDir is where Claude Code keeps configuration on this machine.
-func DefaultClaudeDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".claude"), nil
-}
-
 // MigrateConfig copies local Claude configuration to a box.
 //
 // It copies whatever the filter names and the directory has. An earlier
@@ -376,11 +367,12 @@ type entry struct {
 // rather than after an ssh timeout against a box that was never the problem.
 func Plan(dir string, only []string) ([]entry, []Dropped, error) {
 	if dir == "" {
-		d, err := DefaultClaudeDir()
-		if err != nil {
-			return nil, nil, err
-		}
-		dir = d
+		// No default. Defaulting to ~/.claude copies whatever the person
+		// running this happens to have — personal skills, a settings file
+		// written for their laptop — onto a machine other people share,
+		// without anyone saying so. What ships to a box is a decision, and a
+		// decision has to be written down.
+		return nil, nil, fmt.Errorf("no directory given: name the Claude configuration to copy with --path")
 	}
 	if info, err := os.Stat(dir); err != nil {
 		return nil, nil, fmt.Errorf("read %s: %w", dir, err)
