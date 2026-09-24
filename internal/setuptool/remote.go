@@ -26,7 +26,27 @@ type Target struct {
 
 func (t Target) String() string { return t.User + "@" + t.Host }
 
+// NewTarget builds a target from a host and an optional user.
+//
+// The host may carry the user in the usual ssh spelling — deploy@box — which
+// is how everyone writes it and what every other tool accepts. It is split
+// here rather than handed to ssh, so both halves still go through validate and
+// neither can contain the '@' that made the combined form ambiguous.
+//
+// An explicit --user that disagrees with the one in the host is an error, not
+// a precedence rule: two answers to "who am I logging in as" should be
+// settled by the person who wrote them, not by us.
 func NewTarget(host, user string) (Target, error) {
+	if at := strings.IndexByte(host, '@'); at >= 0 {
+		embedded, rest := host[:at], host[at+1:]
+		if strings.ContainsRune(rest, '@') {
+			return Target{}, fmt.Errorf("host %q has more than one '@': %w", host, ErrUnsafeTarget)
+		}
+		if user != "" && user != embedded {
+			return Target{}, fmt.Errorf("--host says %q and --user says %q; give the user once", embedded, user)
+		}
+		host, user = rest, embedded
+	}
 	if user == "" {
 		user = "root"
 	}
@@ -67,6 +87,37 @@ func sshArgs(t Target, extra ...string) []string {
 		"-o", "ConnectTimeout=15",
 		t.String(),
 	}, extra...)
+}
+
+// privileged wraps a script that has to run as root.
+//
+// Empty for a root target, so a box reached as root runs exactly the command
+// it always did. For anyone else the script goes through non-interactive
+// sudo: -n rather than a prompt, because this tool drives ssh with
+// BatchMode=yes and a password prompt would hang rather than ask.
+//
+// Only the steps that write outside the user's home use this. Escalating the
+// rest would move $HOME to /root and take the config, the knowledge base and
+// sessions.db with it — the service runs as the ssh user, and its files have
+// to be where that user can read them.
+func (t Target) privileged(script string) string {
+	if t.User == "root" {
+		return script
+	}
+	return "sudo -n sh -c " + shq(script)
+}
+
+// CanEscalate reports whether a non-root target can reach root without a
+// prompt. Checked before the first step rather than discovered on the eighth:
+// a half-provisioned box is worse than one that refused to start.
+func CanEscalate(t Target) error {
+	if t.User == "root" {
+		return nil
+	}
+	if _, err := Run(t, "sudo -n true"); err != nil {
+		return fmt.Errorf("%s cannot sudo without a password, and provisioning needs root to install packages and write the service: %w", t, err)
+	}
+	return nil
 }
 
 // Run executes a script on the target and returns its combined output.

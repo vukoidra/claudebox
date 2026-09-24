@@ -30,6 +30,11 @@ version: 1
 # unrestricted one. Writing `deny: []` denies nothing, and has to be done on
 # purpose.
 #
+# ${HOME} expands to the home of the user the server runs as. Writing the path
+# out instead is a quiet way to protect nothing: a box provisioned as anyone
+# but root would deny /root/.claude, which does not exist, and leave the real
+# guide writable.
+#
 # The rules are Claude Code permission rules, and every session runs in
 # acceptEdits, which is the only mode that both works unattended and honours
 # them. Measured against Claude Code 2.1.236: under acceptEdits a denied write
@@ -44,11 +49,11 @@ roles:
     deny:
       # The guide and skills are read by every future session, so one able to
       # rewrite them could change what every later session believes.
-      - "Write(//root/.claude/**)"
-      - "Edit(//root/.claude/**)"
+      - "Write(//${HOME}/.claude/**)"
+      - "Edit(//${HOME}/.claude/**)"
       # And this file decides what every role may do.
-      - "Write(//root/.config/cbx/**)"
-      - "Edit(//root/.config/cbx/**)"
+      - "Write(//${HOME}/.config/cbx/**)"
+      - "Edit(//${HOME}/.config/cbx/**)"
 
   # Answers questions, changes nothing, anywhere.
   readonly:

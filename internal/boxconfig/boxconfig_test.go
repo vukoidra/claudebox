@@ -208,3 +208,36 @@ func TestWritingCommandsLeavesRolesAlone(t *testing.T) {
 		t.Errorf("the commands were not replaced: %v", cfg.Commands)
 	}
 }
+
+// A deny rule has to name a real path, and the path is not knowable when the
+// file is written: the service runs as whoever was provisioned. A literal
+// /root on a box provisioned as someone else denies nothing at all.
+func TestHomeExpandsToTheUserTheServerRunsAs(t *testing.T) {
+	cfg, err := Parse([]byte("version: 1\nroles:\n  reporter:\n    deny:\n      - \"Write(//${HOME}/.claude/**)\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := cfg.Role("reporter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	want := "Write(//" + home + "/.claude/**)"
+	if role.Deny[0] != want {
+		t.Errorf("deny[0] = %q, want %q", role.Deny[0], want)
+	}
+	if strings.Contains(role.Deny[0], "${HOME}") {
+		t.Error("the placeholder reached Claude Code, which would deny a path that does not exist")
+	}
+}
+
+// The shipped config must not hardcode a home, or a box provisioned as
+// anyone but root gets a reporter role that protects nothing.
+func TestTheShippedConfigNamesNoLiteralHome(t *testing.T) {
+	if strings.Contains(string(Default()), "//root/") {
+		t.Error("cbx.example.yaml hardcodes /root; use ${HOME}")
+	}
+}

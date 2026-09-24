@@ -2,6 +2,7 @@ package setuptool
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 	"text/template"
@@ -105,11 +106,44 @@ func TestForwardCommandTargetsThePortTheAPIBinds(t *testing.T) {
 }
 
 func TestTheShippedSpecIsWhatGetsUploaded(t *testing.T) {
-	// UploadCommandSpec sends boxconfig.Default(), which is
-	// commands.example.yaml at the project root. If that stopped parsing, a
-	// box would get a spec its own server refuses to load.
-	if _, err := boxconfig.Parse(boxconfig.Default()); err != nil {
-		t.Fatalf("the spec shipped to boxes does not parse: %v", err)
+	// UploadCommandSpec sends boxconfig.Default(), which is cbx.example.yaml
+	// at the project root. If that stopped parsing, a box would get a config
+	// its own server refuses to load.
+	cfg, err := boxconfig.Parse(boxconfig.Default())
+	if err != nil {
+		t.Fatalf("the config shipped to boxes does not parse: %v", err)
+	}
+	// It carries both sections, which is why the file is no longer named for
+	// one of them.
+	if len(cfg.Roles) == 0 || len(cfg.Commands) == 0 {
+		t.Fatalf("the shipped config is missing a section: %d roles, %d commands", len(cfg.Roles), len(cfg.Commands))
+	}
+}
+
+// The filename follows the rename. A box given commands.yaml keeps working
+// through the server's legacy fallback, but the first PUT /commands writes a
+// cbx.yaml beside it and the uploaded file goes quietly dead.
+func TestTheSpecIsUploadedUnderTheCurrentName(t *testing.T) {
+	src, err := os.ReadFile("api.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	i := strings.Index(body, "func UploadCommandSpec")
+	if i < 0 {
+		t.Fatal("UploadCommandSpec is gone; this test needs rewriting")
+	}
+	fn := body[i:]
+	if end := strings.Index(fn, "\nfunc "); end > 0 {
+		fn = fn[:end]
+	}
+	if !strings.Contains(fn, `"/.config/cbx/cbx.yaml"`) {
+		t.Error("the spec is not uploaded as cbx.yaml")
+	}
+	// And a box already holding either filename is left alone: the operator's
+	// policy outranks the shipped default.
+	if !strings.Contains(fn, "commands.yaml") {
+		t.Error("an existing legacy config is not checked for, so uploading would retire it")
 	}
 }
 

@@ -29,7 +29,9 @@ See [docs/two-binaries.md](docs/two-binaries.md) for why.
 ## Getting started
 
 Create an Ubuntu machine with your SSH key on it — a DigitalOcean droplet, or
-anything you can `ssh root@` into. Then, from your laptop:
+anything you can `ssh` into. Root is not required: name the user and the
+privileged steps go through `sudo`, which is checked before the first one runs.
+Then, from your laptop:
 
 ```bash
 # grab cbx-setuptool for your laptop from the latest release
@@ -38,17 +40,31 @@ curl -fsSL -o cbx-setuptool \
 chmod +x cbx-setuptool
 
 ./cbx-setuptool setup --host <ip> --with-api
+
+# a box that refuses root over ssh — Tailscale forbids it by default
+./cbx-setuptool setup --host deploy@<ip> --with-api
 ```
 
-That installs the tool chain, downloads `cbx` onto the box, signs Claude Code
-in, authenticates `gh`/`vercel`/`supabase` from tokens, and copies your skills
-and settings across. Each step is skipped if already done, so re-running after
-a failure is cheap.
+That installs the base packages and Claude Code, downloads `cbx` onto the box,
+signs Claude Code in, authenticates `gh`/`vercel`/`supabase` from tokens, and
+copies your skills and settings across. Each step is skipped if already done,
+so re-running after a failure is cheap.
+
+The rest of the tool chain is opt-in. `--with` names what you want, and adding
+one later is another `setup` run:
+
+```bash
+./cbx-setuptool setup --host <ip> --with node,"github cli"
+```
+
+`node`, `github cli`, `vercel cli` and `supabase cli` are the choices. `vercel`
+is an npm global, so asking for it without `node` is refused at the flag rather
+than eight steps later at the `npm` call.
 
 `cbx` is fetched from a release matching this tool's own version — the two are
 built from the same commit, so pairing them is what stops a setuptool
 configuring a `cbx` that lacks the command it just wrote a unit for. Pin one
-with `--cbx-version v0.9.0`, or upload a local build with `--binary ./cbx-linux`
+with `--cbx-version v0.10.0`, or upload a local build with `--binary ./cbx-linux`
 when testing something unreleased:
 
 ```bash
@@ -78,11 +94,16 @@ rather than vanishing, and a Remote Control URL survives a tmux restart.
 ## `cbx-setuptool` — on your laptop
 
 ```
-cbx-setuptool setup   --host <ip> [--with-api]          the whole flow
+cbx-setuptool setup   --host <ip> [--with-api] [--with node,gh]   the whole flow
 cbx-setuptool auth    --host <ip> [github|vercel|supabase]
 cbx-setuptool migrate --host <ip> [--claude-dir <dir>] [--filter a,b]
 cbx-setuptool status  --host <ip>    what is installed and authenticated
+cbx-setuptool api     --host <ip> key add <label> --role <role>
 ```
+
+`--host` takes `user@host` as well as a bare host, and `--user` says the same
+thing separately. A bare host means root. Giving both, disagreeing, is an
+error rather than a precedence rule nobody reads.
 
 Tokens are piped over SSH into each tool's own login rather than passed as
 arguments, where they would be visible in the box's process table. A token
@@ -123,7 +144,7 @@ status and duration, because the point is to make the API legible rather than
 hide it.
 
 ```bash
-uv run clients/python/tui.py --key "$(ssh root@<ip> cbx api-key list | cut -f2)"
+uv run clients/python/tui.py --key "$(ssh <ip> cbx api-key list | cut -f2)"
 ```
 
 <p align="center">

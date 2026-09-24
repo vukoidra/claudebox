@@ -30,11 +30,21 @@ func step(status, name, detail string) {
 	fmt.Printf("  %s %s\n", status, name)
 }
 
-func runSetup(t setuptool.Target, binary, cbxVersion string, skipAuth, skipClaude, withAPI bool) error {
+func runSetup(t setuptool.Target, binary, cbxVersion string, with []string, skipAuth, skipClaude, withAPI bool) error {
+	steps, err := setuptool.Select(setuptool.InstallSteps(), with)
+	if err != nil {
+		return err
+	}
+	// Before the first step, not on the eighth: provisioning writes outside
+	// the user's home, and a box that half-provisions is worse than one that
+	// refused to start.
+	if err := setuptool.CanEscalate(t); err != nil {
+		return err
+	}
 	fmt.Printf("\nProvisioning %s\n\n", t)
 
 	fmt.Println("Tools")
-	for _, s := range setuptool.InstallSteps() {
+	for _, s := range steps {
 		skipped, err := s.Run(t)
 		switch {
 		case err != nil:

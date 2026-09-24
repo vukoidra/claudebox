@@ -179,7 +179,28 @@ func (c *Config) Role(name string) (*Role, error) {
 		// Said nothing rather than said nothing-is-denied.
 		r.Deny = DefaultDeny()
 	}
+	r.Deny = expandHome(r.Deny)
 	return &r, nil
+}
+
+// expandHome replaces ${HOME} with the home directory of the user the server
+// runs as.
+//
+// A rule protecting the box's own guide has to name a real path, and that path
+// is not knowable when the file is written: the service runs as whoever was
+// provisioned, which on a box that refuses root over ssh is not root. A
+// hardcoded /root there denies nothing and leaves the guide writable — the
+// opposite of what the role says it does.
+func expandHome(rules []string) []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+	out := make([]string, len(rules))
+	for i, rule := range rules {
+		out[i] = strings.ReplaceAll(rule, "${HOME}", home)
+	}
+	return out
 }
 
 func (c *Config) where() string {
