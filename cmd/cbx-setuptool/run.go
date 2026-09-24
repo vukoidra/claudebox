@@ -30,7 +30,7 @@ func step(status, name, detail string) {
 	fmt.Printf("  %s %s\n", status, name)
 }
 
-func runSetup(t setuptool.Target, binary, cbxVersion string, with []string, skipAuth, skipClaude, withAPI bool) error {
+func runSetup(t setuptool.Target, binary, cbxVersion, claudePath string, with []string, skipAuth, skipClaude, withAPI bool) error {
 	steps, err := setuptool.Select(setuptool.InstallSteps(), with)
 	if err != nil {
 		return err
@@ -104,7 +104,17 @@ func runSetup(t setuptool.Target, binary, cbxVersion string, with []string, skip
 	}
 
 	fmt.Println("\nConfig")
-	copied, dropped, err := setuptool.MigrateConfig(t, setuptool.MigrateOptions{})
+	if claudePath == "" {
+		// Nothing, rather than ~/.claude. This step used to copy whoever ran
+		// setup's personal configuration onto the box without being asked.
+		step(skip, "claude config", "no --path given — nothing copied")
+		return finishSetup(t, withAPI)
+	}
+	dir, err := expandHome(claudePath)
+	if err != nil {
+		return err
+	}
+	copied, dropped, err := setuptool.MigrateConfig(t, setuptool.MigrateOptions{Dir: dir})
 	for _, c := range copied {
 		if c.Files == 0 {
 			// Reporting a tick here is how an empty directory once looked
@@ -122,18 +132,28 @@ func runSetup(t setuptool.Target, binary, cbxVersion string, with []string, skip
 		return err
 	}
 
+	return finishSetup(t, withAPI)
+}
+
+// finishSetup installs the API if it was asked for, and says how to reach the
+// box. Shared because the config step returns early when it has nothing to
+// copy, and both paths still have to finish.
+func finishSetup(t setuptool.Target, withAPI bool) error {
 	if withAPI {
 		fmt.Println("\nAPI")
 		if err := setuptool.UploadCommandSpec(t); err != nil {
-			step(cross, "commands.yaml", err.Error())
+			step(cross, setuptool.ConfigName, err.Error())
 			return err
 		}
-		step(tick, "commands.yaml", "~/.config/cbx/commands.yaml")
+		step(tick, setuptool.ConfigName, "~/.config/cbx/"+setuptool.ConfigName)
 		if err := setuptool.InstallAPI(t, setuptool.APIOptions{}); err != nil {
 			step(cross, "service", err.Error())
 			return err
 		}
 		step(tick, "service", "cbx-api, enabled and started")
+		// Issues the box's first key if it has none: the API is unusable
+		// without one, and a box being set up is exactly the box that has
+		// none yet.
 		key, err := setuptool.APIKey(t)
 		if err != nil {
 			step(cross, "key", err.Error())

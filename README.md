@@ -46,9 +46,13 @@ chmod +x cbx-setuptool
 ```
 
 That installs the base packages and Claude Code, downloads `cbx` onto the box,
-signs Claude Code in, authenticates `gh`/`vercel`/`supabase` from tokens, and
-copies your skills and settings across. Each step is skipped if already done,
-so re-running after a failure is cheap.
+signs Claude Code in, and authenticates `gh`/`vercel`/`supabase` from tokens.
+Each step is skipped if already done, so re-running after a failure is cheap.
+
+No Claude configuration is copied unless `--path` names a directory to copy.
+There is deliberately no default: the obvious one, `~/.claude`, is personal,
+and putting it on a machine other people share is not something to do by
+omission.
 
 The rest of the tool chain is opt-in. `--with` names what you want, and adding
 one later is another `setup` run:
@@ -94,9 +98,9 @@ rather than vanishing, and a Remote Control URL survives a tmux restart.
 ## `cbx-setuptool` — on your laptop
 
 ```
-cbx-setuptool setup   --host <ip> [--with-api] [--with node,gh]   the whole flow
+cbx-setuptool setup   --host <ip> [--with-api] [--with node,gh] [--path <dir>]
 cbx-setuptool auth    --host <ip> [github|vercel|supabase]
-cbx-setuptool migrate --host <ip> [--claude-dir <dir>] [--filter a,b]
+cbx-setuptool migrate --host <ip> --path <dir> [--filter a,b]
 cbx-setuptool status  --host <ip>    what is installed and authenticated
 cbx-setuptool api     --host <ip> key add <label> --role <role>
 ```
@@ -112,8 +116,9 @@ already in your environment (`GH_TOKEN`, `VERCEL_TOKEN`,
 
 `migrate` copies the parts of a Claude configuration directory that shape a
 session — by default `skills`, `agents`, `rules`, `settings.json` and the
-plugin manifest. `--claude-dir` picks which directory to copy from, and
-`--filter` picks what inside it travels, so neither is fixed.
+plugin manifest. `--path` says which directory, and is **required**: what
+ships to a box is a decision, and the obvious default would be whoever ran the
+command's personal configuration. `--filter` picks what inside it travels.
 
 `settings.json` is rewritten on the way: paths under your home directory are
 remapped, and hooks calling binaries the box does not have are dropped and

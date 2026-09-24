@@ -2,7 +2,7 @@ package setuptool
 
 import (
 	"bytes"
-	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"text/template"
@@ -124,26 +124,13 @@ func TestTheShippedSpecIsWhatGetsUploaded(t *testing.T) {
 // through the server's legacy fallback, but the first PUT /commands writes a
 // cbx.yaml beside it and the uploaded file goes quietly dead.
 func TestTheSpecIsUploadedUnderTheCurrentName(t *testing.T) {
-	src, err := os.ReadFile("api.go")
-	if err != nil {
-		t.Fatal(err)
+	if got := ConfigPath("/home/box"); got != "/home/box/.config/cbx/cbx.yaml" {
+		t.Errorf("ConfigPath() = %q", got)
 	}
-	body := string(src)
-	i := strings.Index(body, "func UploadCommandSpec")
-	if i < 0 {
-		t.Fatal("UploadCommandSpec is gone; this test needs rewriting")
-	}
-	fn := body[i:]
-	if end := strings.Index(fn, "\nfunc "); end > 0 {
-		fn = fn[:end]
-	}
-	if !strings.Contains(fn, `"/.config/cbx/cbx.yaml"`) {
-		t.Error("the spec is not uploaded as cbx.yaml")
-	}
-	// And a box already holding either filename is left alone: the operator's
-	// policy outranks the shipped default.
-	if !strings.Contains(fn, "commands.yaml") {
-		t.Error("an existing legacy config is not checked for, so uploading would retire it")
+	// And the pre-roles name is still known, because a box holding it must be
+	// left alone rather than given a second config.
+	if LegacyConfigPath("/home/box") == ConfigPath("/home/box") {
+		t.Error("the legacy path is not distinguishable, so an older box cannot be detected")
 	}
 }
 
@@ -263,5 +250,57 @@ func TestLastLineIsWhatTheBinaryReported(t *testing.T) {
 	// what was asked for.
 	if got := lastLine("downloading...\ninstalling\ncbx version 0.9.0\n"); got != "cbx version 0.9.0" {
 		t.Errorf("lastLine = %q", got)
+	}
+}
+
+// A box with no keys is the ordinary state of one being set up, not a
+// failure. Refusing here made `setup --with-api` fail on exactly the machine
+// it was meant to prepare.
+func TestABoxWithNoKeysIsNotAFailure(t *testing.T) {
+	cases := []struct {
+		name, listing, want string
+		found               bool
+	}{
+		{"a populated listing", "backend\tcbx_live_abc\treporter\t2026-09-24\n", "cbx_live_abc", true},
+		{"several keys, the first usable one", "a\tcbx_live_one\nb\tcbx_live_two\n", "cbx_live_one", true},
+		{"a box with none", "", "", false},
+		{"headers but no rows", "label\tvalue\trole\n", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := firstKey(c.listing)
+			if ok != c.found || got != c.want {
+				t.Errorf("firstKey() = %q, %v; want %q, %v", got, ok, c.want, c.found)
+			}
+		})
+	}
+}
+
+// The uploader writes the config and setup prints where it went. Two literals
+// drifted once — written as cbx.yaml, reported as the pre-roles commands.yaml
+// — which is a tool lying about what it just did.
+func TestTheUploadedConfigIsNamedWhatSetupPrints(t *testing.T) {
+	if ConfigName != filepath.Base(boxconfig.DefaultPath()) {
+		t.Errorf("ConfigName = %q but the server reads %q", ConfigName, boxconfig.DefaultPath())
+	}
+}
+
+// Least privilege that still works: a session can write its own output and
+// nothing that shapes the box. An unrestricted default would make the role
+// system opt-in.
+func TestTheFirstKeyIsIssuedAgainstARestrictedRole(t *testing.T) {
+	if DefaultRole == "" {
+		t.Fatal("a key issued during setup would carry no role, and an empty role is refused")
+	}
+	cfg, err := boxconfig.Parse(boxconfig.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := cfg.Role(DefaultRole)
+	if err != nil {
+		t.Fatalf("the shipped config does not define %q: %v", DefaultRole, err)
+	}
+	if len(role.Deny) == 0 {
+		t.Errorf("%q denies nothing, so setup would hand out an unrestricted key", DefaultRole)
 	}
 }

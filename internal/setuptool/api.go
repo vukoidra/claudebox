@@ -86,14 +86,14 @@ func UploadCommandSpec(t Target) error {
 	if err != nil {
 		return err
 	}
-	dest := home + "/.config/cbx/cbx.yaml"
+	dest := ConfigPath(home)
 	if _, err := Run(t, "mkdir -p "+shq(home+"/.config/cbx")); err != nil {
 		return err
 	}
 	// Never overwrite an edited config. The operator's policy outranks ours —
 	// and that includes a box still holding the pre-roles filename, where
 	// writing cbx.yaml would silently retire the file they edited.
-	legacy := home + "/.config/cbx/commands.yaml"
+	legacy := LegacyConfigPath(home)
 	if _, err := Run(t, "test -f "+shq(dest)+" -o -f "+shq(legacy)); err == nil {
 		return nil
 	}
@@ -141,19 +141,57 @@ func Keys(t Target, action, label, role string) (string, error) {
 	return strings.TrimRight(out, "\n"), nil
 }
 
-// APIKey reads a usable key off the box, for printing after setup.
+// ConfigName is what the box's policy file is called.
+//
+// One definition because two places name it: the uploader writes it and setup
+// prints it. They drifted once — written as cbx.yaml, reported as the
+// pre-roles commands.yaml — which is a tool lying about what it just did.
+const ConfigName = "cbx.yaml"
+
+// LegacyConfigName is what the file was called before it held roles as well
+// as commands. Read so a box configured earlier is left alone rather than
+// quietly given a second config the server would prefer.
+const LegacyConfigName = "commands.yaml"
+
+// ConfigPath is where the config lives in a given home directory.
+func ConfigPath(home string) string { return home + "/.config/cbx/" + ConfigName }
+
+// LegacyConfigPath is the same, under the pre-roles name.
+func LegacyConfigPath(home string) string { return home + "/.config/cbx/" + LegacyConfigName }
+
+// DefaultRole is what a key gets when nobody says. Least privilege that still
+// works: a session can write its own output and nothing that shapes the box.
+// An unrestricted default would make the role system opt-in.
+const DefaultRole = "reporter"
+
+// APIKey reads a usable key off the box, issuing one if it has none.
+//
+// A box with no keys is not a failure — it is the ordinary state of a box
+// being set up for the first time, and the API is unusable until one exists.
+// Refusing here made `setup --with-api` fail on exactly the machine it was
+// meant to prepare.
 func APIKey(t Target) (string, error) {
 	out, err := remote(t, "cbx api-key list")
 	if err != nil {
 		return "", fmt.Errorf("read the API keys: %w", err)
 	}
-	for _, line := range strings.Split(out, "\n") {
+	if key, ok := firstKey(out); ok {
+		return key, nil
+	}
+	return Keys(t, "add", "setup", DefaultRole)
+}
+
+// firstKey picks a usable key out of `cbx api-key list`. The second return
+// distinguishes "none yet" from a parse that went wrong, because the first is
+// ordinary and the second is not.
+func firstKey(listing string) (string, bool) {
+	for _, line := range strings.Split(listing, "\n") {
 		fields := strings.Split(strings.TrimSpace(line), "\t")
 		if len(fields) >= 2 && strings.HasPrefix(fields[1], "cbx_live_") {
-			return fields[1], nil
+			return fields[1], true
 		}
 	}
-	return "", fmt.Errorf("this box has no API keys — `cbx-setuptool api key add <label> --role reporter`")
+	return "", false
 }
 
 // parseFact pulls one value out of cbx's tab-separated output.
