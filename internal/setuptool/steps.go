@@ -58,7 +58,7 @@ func onDefaultPath(t Target, bin string) bool {
 // they install. The base packages and Claude Code are not here: the first is
 // what everything else is fetched with, and the second is the reason the box
 // exists.
-var Optional = []string{"node", "github cli", "vercel cli", "supabase cli"}
+var Optional = []string{"node", "github cli", "vercel cli", "supabase cli", "uv"}
 
 // needs records a tool that cannot install without another. vercel is an npm
 // global, so asking for it without node fails at the npm call rather than at
@@ -160,6 +160,23 @@ apt-get update -qq && apt-get install -y -qq `+pkgs)
 				}
 				_, err := remoteRoot(t, `install -m 0755 /tmp/supabase /usr/local/bin/supabase && rm -f /tmp/supabase`)
 				return err
+			},
+		},
+		{
+			Name: "uv",
+			// On the default PATH, not the tool PATH: the installer puts uv
+			// under $HOME/.local/bin, and the step's job is to make it
+			// reachable without that prefix.
+			Check: func(t Target) bool { return onDefaultPath(t, "uv") },
+			Do: func(t Target) error {
+				out, err := remote(t, uvInstallScript)
+				if err != nil {
+					return err
+				}
+				if _, err := remoteRoot(t, uvLinkScript(lastLine(out))); err != nil {
+					return err
+				}
+				return uvManagedPython(t)
 			},
 		},
 		{
@@ -328,6 +345,35 @@ type MigrateOptions struct {
 	Dir string
 	// Only names what to copy, relative to Dir. Empty means DefaultFilter.
 	Only []string
+}
+
+// uvInstallScript runs as the ssh user, never as root: the installer writes
+// into $HOME/.local/bin and $HOME/.local/share, and under sudo both become
+// root's, where a service running as the ssh user cannot reach them. It prints
+// where uv landed, because the link step needs the real path rather than a
+// guess at it.
+const uvInstallScript = `curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || true
+src=$(command -v uv 2>/dev/null || true)
+if [ -z "$src" ]; then echo "uv is not on PATH after install" >&2; exit 1; fi
+echo "$src"`
+
+// uvLinkScript is the half that needs root: putting uv where a
+// non-interactive ssh session finds it without reading an rc file.
+func uvLinkScript(src string) string {
+	return `ln -sf ` + shq(src) + ` /usr/local/bin/uv
+ln -sf ` + shq(src+"x") + ` /usr/local/bin/uvx 2>/dev/null || true
+test -x /usr/local/bin/uv`
+}
+
+// uvManagedPython installs an interpreter uv owns.
+//
+// Without one, uv picks whatever python the box has. A real box was found
+// carrying a hand-built 3.10 in /usr/local with no _ctypes — it installs
+// packages happily and fails at import, which reads as a broken package
+// rather than a broken interpreter.
+func uvManagedPython(t Target) error {
+	_, err := remote(t, "uv python install 3.12")
+	return err
 }
 
 // DefaultFilter is what a box gets when nobody says otherwise.

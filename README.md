@@ -61,9 +61,13 @@ one later is another `setup` run:
 ./cbx-setuptool setup --host <ip> --with node,"github cli"
 ```
 
-`node`, `github cli`, `vercel cli` and `supabase cli` are the choices. `vercel`
-is an npm global, so asking for it without `node` is refused at the flag rather
-than eight steps later at the `npm` call.
+`node`, `github cli`, `vercel cli`, `supabase cli` and `uv` are the choices.
+`vercel` is an npm global, so asking for it without `node` is refused at the
+flag rather than eight steps later at the `npm` call.
+
+`uv` also installs a managed Python 3.12. Without one, uv uses whatever
+interpreter the box has — a real box turned out to carry a hand-built 3.10 with
+no `_ctypes`, which installs packages happily and fails at import.
 
 `cbx` is fetched from a release matching this tool's own version — the two are
 built from the same commit, so pairing them is what stops a setuptool

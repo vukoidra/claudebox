@@ -78,7 +78,7 @@ it nothing is copied: the obvious default, ~/.claude, is personal, and putting
 it on a machine other people share is not something to do by omission.
 
 --with names the optional tools: node, "github cli", "vercel cli",
-"supabase cli". Naming none gives the base box. They can be added later by
+"supabase cli", uv. Naming none gives the base box. They can be added later by
 running setup again with more names.
 
 Step 3 needs you: the Claude subscription login is a browser OAuth with no
@@ -105,7 +105,7 @@ privileged steps go through sudo, which is checked before the first one runs.`,
 	cmd.Flags().StringVar(&binary, "binary", "", "Upload this locally built linux cbx instead of downloading a release (for testing an unreleased build)")
 	cmd.Flags().StringVar(&cbxVersion, "cbx-version", "", "Release tag of cbx to install (default: this tool's own version, or the latest release)")
 	cmd.Flags().StringVar(&claudePath, "path", "", "Claude configuration directory to copy to the box (default: copy nothing)")
-	cmd.Flags().StringSliceVar(&with, "with", nil, `Optional tools to install: node, "github cli", "vercel cli", "supabase cli" (default: none)`)
+	cmd.Flags().StringSliceVar(&with, "with", nil, `Optional tools to install: node, "github cli", "vercel cli", "supabase cli", uv (default: none)`)
 	cmd.Flags().BoolVar(&skipAuth, "skip-auth", false, "Skip the CLI token prompts")
 	cmd.Flags().BoolVar(&skipClaude, "skip-claude-login", false, "Install everything but leave Claude Code signed out (sign in later with another setup run)")
 	cmd.Flags().BoolVar(&withAPI, "with-api", false, "Install and start the HTTP API as a systemd service")

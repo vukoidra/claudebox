@@ -115,6 +115,9 @@ func TestSelectInstallsTheBaseAndWhatWasNamed(t *testing.T) {
 			[]string{"system packages", "node", "vercel cli", "claude code"}},
 		{"order follows the chain, not the flag", []string{"supabase cli", "github cli"},
 			[]string{"system packages", "github cli", "supabase cli", "claude code"}},
+		{"uv", []string{"uv"}, []string{"system packages", "uv", "claude code"}},
+		{"uv alongside node", []string{"node", "uv"},
+			[]string{"system packages", "node", "uv", "claude code"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -152,6 +155,54 @@ func TestTheBaseAndClaudeAreNotOptional(t *testing.T) {
 		if slices.Contains(Optional, name) {
 			t.Errorf("%q must not be optional", name)
 		}
+	}
+}
+
+// --- uv ---
+
+// The installer writes into the ssh user's home. Running it under sudo puts uv
+// in root's home, where a service running as the ssh user cannot reach it —
+// the same split the claude code step needs, and the same reason.
+func TestUvInstallsAsTheUserAndLinksAsRoot(t *testing.T) {
+	if strings.Contains(uvInstallScript, "sudo") {
+		t.Error("the installer half escalates, which would install uv into root's home")
+	}
+	if !strings.Contains(uvInstallScript, "astral.sh/uv/install.sh") {
+		t.Error("the installer half does not install uv")
+	}
+	// It must report where uv landed: the link step needs the real path, and a
+	// guess at it is how a symlink ends up pointing at nothing.
+	if !strings.Contains(uvInstallScript, "command -v uv") {
+		t.Error("the installer half does not report where uv landed")
+	}
+
+	link := uvLinkScript("/home/box/.local/bin/uv")
+	if !strings.Contains(link, "/usr/local/bin/uv") {
+		t.Error("the link half does not put uv on the default PATH")
+	}
+	if !strings.Contains(link, "test -x /usr/local/bin/uv") {
+		t.Error("the link half does not verify the link, so a broken one reports success")
+	}
+}
+
+// $HOME/.local/bin is not on PATH for a non-interactive ssh session, which
+// reads no rc file. A step claiming the PATH has to check the PATH everything
+// else sees, or it is skipped while the binary stays hidden.
+func TestUvIsCheckedOnTheDefaultPath(t *testing.T) {
+	var found bool
+	for _, s := range InstallSteps() {
+		if s.Name == "uv" {
+			found = true
+			if s.Check == nil {
+				t.Fatal("the uv step has no Check, so a failed install reports success")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("there is no uv step")
+	}
+	if !slices.Contains(Optional, "uv") {
+		t.Error("uv is not optional, so every box would get it whether or not it was asked for")
 	}
 }
 
