@@ -62,10 +62,15 @@ func InstallAPI(t Target, opts APIOptions) error {
 		return err
 	}
 	tmp.Close()
-	if err := Upload(t, tmp.Name(), UnitPath); err != nil {
+	// Via /tmp: scp authenticates as the ssh user, who cannot write
+	// /etc/systemd/system. The install is the privileged half.
+	if err := Upload(t, tmp.Name(), "/tmp/cbx-api.service"); err != nil {
 		return err
 	}
-	if _, err := remote(t, "systemctl daemon-reload && systemctl enable --now cbx-api"); err != nil {
+	if _, err := remoteRoot(t, "install -m 0644 /tmp/cbx-api.service "+shq(UnitPath)+" && rm -f /tmp/cbx-api.service"); err != nil {
+		return fmt.Errorf("write the service unit: %w", err)
+	}
+	if _, err := remoteRoot(t, "systemctl daemon-reload && systemctl enable --now cbx-api"); err != nil {
 		return fmt.Errorf("start the API service: %w", err)
 	}
 	return nil
@@ -81,12 +86,15 @@ func UploadCommandSpec(t Target) error {
 	if err != nil {
 		return err
 	}
-	dest := home + "/.config/cbx/commands.yaml"
+	dest := home + "/.config/cbx/cbx.yaml"
 	if _, err := Run(t, "mkdir -p "+shq(home+"/.config/cbx")); err != nil {
 		return err
 	}
-	// Never overwrite an edited spec. The operator's policy outranks ours.
-	if _, err := Run(t, "test -f "+shq(dest)); err == nil {
+	// Never overwrite an edited config. The operator's policy outranks ours —
+	// and that includes a box still holding the pre-roles filename, where
+	// writing cbx.yaml would silently retire the file they edited.
+	legacy := home + "/.config/cbx/commands.yaml"
+	if _, err := Run(t, "test -f "+shq(dest)+" -o -f "+shq(legacy)); err == nil {
 		return nil
 	}
 	tmp, err := os.CreateTemp("", "cbx-commands-*.yaml")

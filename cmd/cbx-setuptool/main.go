@@ -56,6 +56,7 @@ func target(host, user string) (setuptool.Target, error) {
 
 func setupCmd() *cobra.Command {
 	var host, user, binary, cbxVersion string
+	var with []string
 	var skipAuth, skipClaude, withAPI bool
 
 	cmd := &cobra.Command{
@@ -63,7 +64,7 @@ func setupCmd() *cobra.Command {
 		Short: "Install and configure everything on a box",
 		Long: `Runs the whole provisioning flow against a box:
 
-  1. install the tool chain (node, gh, vercel, supabase, claude)
+  1. install the base packages and Claude Code, plus whatever --with names
   2. install cbx — downloaded from a release, or uploaded with --binary
   3. sign Claude Code in — interactive, you complete it in a browser
   4. authenticate gh / vercel / supabase from tokens
@@ -72,10 +73,19 @@ func setupCmd() *cobra.Command {
 Each step is skipped if it is already done, so re-running is cheap and safe
 after a failure.
 
+--with names the optional tools: node, "github cli", "vercel cli",
+"supabase cli". Naming none gives the base box. They can be added later by
+running setup again with more names.
+
 Step 3 needs you: the Claude subscription login is a browser OAuth with no
-token path. Everything else can be answered from environment variables.`,
+token path. Everything else can be answered from environment variables.
+
+A box that refuses root over ssh works: name the user with --user and the
+privileged steps go through sudo, which is checked before the first one runs.`,
 		Example: "  cbx-setuptool setup --host 203.0.113.9\n" +
 			"  cbx-setuptool setup --host 203.0.113.9 --with-api\n" +
+			"  cbx-setuptool setup --host 203.0.113.9 --with node,\"github cli\"\n" +
+			"  cbx-setuptool setup --host 203.0.113.9 --user deploy --with-api\n" +
 			"  cbx-setuptool setup --host 203.0.113.9 --binary ./cbx-linux",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -83,13 +93,14 @@ token path. Everything else can be answered from environment variables.`,
 			if err != nil {
 				return err
 			}
-			return runSetup(t, binary, cbxVersion, skipAuth, skipClaude, withAPI)
+			return runSetup(t, binary, cbxVersion, with, skipAuth, skipClaude, withAPI)
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
-	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
+	cmd.Flags().StringVar(&user, "user", "", "SSH user (default root; or write it as user@host)")
 	cmd.Flags().StringVar(&binary, "binary", "", "Upload this locally built linux cbx instead of downloading a release (for testing an unreleased build)")
 	cmd.Flags().StringVar(&cbxVersion, "cbx-version", "", "Release tag of cbx to install (default: this tool's own version, or the latest release)")
+	cmd.Flags().StringSliceVar(&with, "with", nil, `Optional tools to install: node, "github cli", "vercel cli", "supabase cli" (default: none)`)
 	cmd.Flags().BoolVar(&skipAuth, "skip-auth", false, "Skip the CLI token prompts")
 	cmd.Flags().BoolVar(&skipClaude, "skip-claude-login", false, "Install everything but leave Claude Code signed out (sign in later with another setup run)")
 	cmd.Flags().BoolVar(&withAPI, "with-api", false, "Install and start the HTTP API as a systemd service")
@@ -134,7 +145,7 @@ these sessions.`,
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
-	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
+	cmd.Flags().StringVar(&user, "user", "", "SSH user (default root; or write it as user@host)")
 	cmd.Flags().StringVar(&role, "role", "", "Role a new key is issued against (see the box's cbx.yaml)")
 	return cmd
 }
@@ -171,7 +182,7 @@ token path. Use setup for that.`,
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
-	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
+	cmd.Flags().StringVar(&user, "user", "", "SSH user (default root; or write it as user@host)")
 	return cmd
 }
 
@@ -229,7 +240,7 @@ empty. A symlink to a directory is reported, not followed.`,
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
-	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
+	cmd.Flags().StringVar(&user, "user", "", "SSH user (default root; or write it as user@host)")
 	cmd.Flags().StringVar(&claudeDir, "claude-dir", "", "Local Claude directory to copy from (default ~/.claude)")
 	cmd.Flags().StringSliceVar(&filter, "filter", nil, "What to copy, comma-separated (default skills,agents,rules,settings.json,plugins manifest)")
 	return cmd
@@ -271,6 +282,6 @@ func statusCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "IP or hostname of the box (required)")
-	cmd.Flags().StringVar(&user, "user", "root", "SSH user")
+	cmd.Flags().StringVar(&user, "user", "", "SSH user (default root; or write it as user@host)")
 	return cmd
 }

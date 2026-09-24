@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,150 @@ func TestNewTargetDefaultsToRoot(t *testing.T) {
 	if tg.String() != "root@203.0.113.9" {
 		t.Errorf("String() = %q, want root@203.0.113.9", tg.String())
 	}
+}
+
+func TestNewTargetTakesTheUserFromTheHost(t *testing.T) {
+	cases := []struct {
+		name, host, user, want string
+	}{
+		{"the ssh spelling", "deploy@203.0.113.9", "", "deploy@203.0.113.9"},
+		{"a flag instead", "203.0.113.9", "deploy", "deploy@203.0.113.9"},
+		{"neither means root", "203.0.113.9", "", "root@203.0.113.9"},
+		{"both, agreeing", "deploy@203.0.113.9", "deploy", "deploy@203.0.113.9"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tg, err := NewTarget(c.host, c.user)
+			if err != nil {
+				t.Fatalf("NewTarget(%q, %q): %v", c.host, c.user, err)
+			}
+			if tg.String() != c.want {
+				t.Errorf("String() = %q, want %q", tg.String(), c.want)
+			}
+		})
+	}
+}
+
+// Two answers to "who am I logging in as" is a question for whoever wrote
+// them, not something to settle with a precedence rule nobody reads.
+func TestNewTargetRefusesTwoDifferentUsers(t *testing.T) {
+	if _, err := NewTarget("deploy@203.0.113.9", "root"); err == nil {
+		t.Fatal("a host user and a --user that disagree were accepted")
+	}
+	// Still rejected after the split, since neither half may contain '@'.
+	if _, err := NewTarget("a@b@203.0.113.9", ""); err == nil {
+		t.Fatal("a host with two '@' was accepted")
+	}
+}
+
+// --- privilege ---
+//
+// A box that refuses root over ssh is the normal case on a hardened network;
+// Tailscale's default policy forbids it. Provisioning still has to install
+// packages and write a unit, so the privileged half goes through sudo while
+// everything scoped to the user's home stays as the user.
+
+func TestARootTargetRunsPrivilegedScriptsUnchanged(t *testing.T) {
+	tg, err := NewTarget("box", "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, script := range privilegedScripts {
+		if got := tg.privileged(script); got != script {
+			t.Errorf("a root target should run the script as-is\n got: %s\nwant: %s", got, script)
+		}
+	}
+}
+
+func TestANonRootTargetEscalatesPrivilegedScripts(t *testing.T) {
+	tg, err := NewTarget("box", "deploy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, script := range privilegedScripts {
+		got := tg.privileged(script)
+		if !strings.HasPrefix(got, "sudo -n ") {
+			t.Errorf("%q was not escalated: %s", script, got)
+		}
+		if !strings.Contains(got, script) {
+			t.Errorf("the script did not survive escalation: %s", got)
+		}
+	}
+}
+
+// A box reached as root needs no sudo at all, so the check must not fire and
+// must not cost an ssh round trip.
+func TestEscalationIsOnlyCheckedForANonRootTarget(t *testing.T) {
+	tg, err := NewTarget("203.0.113.9", "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CanEscalate(tg); err != nil {
+		t.Errorf("a root target should need no escalation check: %v", err)
+	}
+}
+
+// --- tool selection ---
+
+func TestSelectInstallsTheBaseAndWhatWasNamed(t *testing.T) {
+	cases := []struct {
+		name string
+		with []string
+		want []string
+	}{
+		{"nothing named is the base box", nil, []string{"system packages", "claude code"}},
+		{"an empty name is not a tool", []string{""}, []string{"system packages", "claude code"}},
+		{"one tool", []string{"node"}, []string{"system packages", "node", "claude code"}},
+		{"a dependency and its dependant", []string{"node", "vercel cli"},
+			[]string{"system packages", "node", "vercel cli", "claude code"}},
+		{"order follows the chain, not the flag", []string{"supabase cli", "github cli"},
+			[]string{"system packages", "github cli", "supabase cli", "claude code"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			steps, err := Select(InstallSteps(), c.with)
+			if err != nil {
+				t.Fatalf("Select(%v): %v", c.with, err)
+			}
+			var got []string
+			for _, s := range steps {
+				got = append(got, s.Name)
+			}
+			if strings.Join(got, ",") != strings.Join(c.want, ",") {
+				t.Errorf("steps = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestSelectRefusesWhatItCannotInstall(t *testing.T) {
+	// vercel is an npm global. Without node it fails at the npm call, eight
+	// steps in, rather than at the flag.
+	if _, err := Select(InstallSteps(), []string{"vercel cli"}); err == nil {
+		t.Error("vercel without node was accepted")
+	}
+	// A typo should not quietly produce a box missing the tool it asked for.
+	if _, err := Select(InstallSteps(), []string{"nodejs"}); err == nil {
+		t.Error("an unknown tool name was accepted")
+	}
+}
+
+// Claude Code is the reason the box exists, and the base packages are what
+// everything else is fetched with. Neither can be switched off.
+func TestTheBaseAndClaudeAreNotOptional(t *testing.T) {
+	for _, name := range []string{"system packages", "claude code"} {
+		if slices.Contains(Optional, name) {
+			t.Errorf("%q must not be optional", name)
+		}
+	}
+}
+
+// The three shapes of privileged work: a package install, something landing
+// in /usr/local/bin, and the service unit.
+var privilegedScripts = []string{
+	"apt-get install -y -qq curl",
+	"install -m 0755 /tmp/cbx.download /usr/local/bin/cbx",
+	"systemctl daemon-reload && systemctl enable --now cbx-api",
 }
 
 // ssh has no "--" sentinel, so a host or user beginning with "-" is parsed as

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -28,6 +29,13 @@ const toolPath = `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.car
 // remote runs a script with the tool PATH already set.
 func remote(t Target, script string) (string, error) { return Run(t, toolPath+script) }
 
+// remoteRoot runs a script that has to be root: package installs, anything
+// landing in /usr/local/bin, and the service unit. On a root target it is
+// remote() exactly; on any other it goes through sudo.
+func remoteRoot(t Target, script string) (string, error) {
+	return Run(t, t.privileged(toolPath+script))
+}
+
 // has reports whether a binary resolves on the box, with the tool PATH set.
 func has(t Target, bin string) bool {
 	_, err := remote(t, "command -v "+bin+" >/dev/null 2>&1")
@@ -46,6 +54,49 @@ func onDefaultPath(t Target, bin string) bool {
 	return err == nil
 }
 
+// Optional names the tools a box can be provisioned without, in the order
+// they install. The base packages and Claude Code are not here: the first is
+// what everything else is fetched with, and the second is the reason the box
+// exists.
+var Optional = []string{"node", "github cli", "vercel cli", "supabase cli"}
+
+// needs records a tool that cannot install without another. vercel is an npm
+// global, so asking for it without node fails at the npm call rather than at
+// the flag — which is the wrong end of the run to find out.
+var needs = map[string]string{"vercel cli": "node"}
+
+// Select narrows the tool chain to the named optional tools.
+//
+// Naming nothing gives the base box: system packages and Claude Code. An
+// unknown name is an error rather than a silent no-op — a typo in a flag
+// should not quietly produce a box missing the thing it asked for.
+func Select(steps []Step, wanted []string) ([]Step, error) {
+	want := map[string]bool{}
+	for _, name := range wanted {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if !slices.Contains(Optional, name) {
+			return nil, fmt.Errorf("unknown tool %q (%s)", name, strings.Join(Optional, ", "))
+		}
+		want[name] = true
+	}
+	for name := range want {
+		if dep, ok := needs[name]; ok && !want[dep] {
+			return nil, fmt.Errorf("%s needs %s — name it too", name, dep)
+		}
+	}
+	out := make([]Step, 0, len(steps))
+	for _, step := range steps {
+		if slices.Contains(Optional, step.Name) && !want[step.Name] {
+			continue
+		}
+		out = append(out, step)
+	}
+	return out, nil
+}
+
 // InstallSteps is the tool chain a box needs.
 //
 // Every Do is followed by its own Check in Run, so a step that exits 0 without
@@ -54,7 +105,7 @@ func onDefaultPath(t Target, bin string) bool {
 func InstallSteps() []Step {
 	apt := func(pkgs string) func(Target) error {
 		return func(t Target) error {
-			_, err := remote(t, `export DEBIAN_FRONTEND=noninteractive
+			_, err := remoteRoot(t, `export DEBIAN_FRONTEND=noninteractive
 while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 apt-get update -qq && apt-get install -y -qq `+pkgs)
 			return err
@@ -75,7 +126,7 @@ apt-get update -qq && apt-get install -y -qq `+pkgs)
 				// non-interactive ssh session reads no rc file, so anything
 				// under $HOME is invisible to `ssh box vercel ...` and to any
 				// tool that does not know to prepend it.
-				_, err := remote(t, `curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && `+
+				_, err := remoteRoot(t, `curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && `+
 					`DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs && `+
 					`npm config set prefix /usr/local`)
 				return err
@@ -85,7 +136,7 @@ apt-get update -qq && apt-get install -y -qq `+pkgs)
 			Name:  "github cli",
 			Check: func(t Target) bool { return onDefaultPath(t, "gh") },
 			Do: func(t Target) error {
-				_, err := remote(t, `curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && `+
+				_, err := remoteRoot(t, `curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && `+
 					`echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && `+
 					`DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y -qq gh`)
 				return err
@@ -94,7 +145,8 @@ apt-get update -qq && apt-get install -y -qq `+pkgs)
 		{
 			Name:  "vercel cli",
 			Check: func(t Target) bool { return onDefaultPath(t, "vercel") },
-			Do:    func(t Target) error { _, err := remote(t, `npm install -g vercel`); return err },
+			// Root because the npm prefix is /usr/local, set by the node step.
+			Do: func(t Target) error { _, err := remoteRoot(t, `npm install -g vercel`); return err },
 		},
 		{
 			Name:  "supabase cli",
@@ -103,8 +155,10 @@ apt-get update -qq && apt-get install -y -qq `+pkgs)
 				// The install script drops a binary in the working directory
 				// rather than onto PATH, which is why an earlier version
 				// reported success while `supabase` resolved nowhere.
-				_, err := remote(t, `cd /tmp && curl -fsSL https://github.com/supabase/cli/releases/latest/download/supabase_linux_$(dpkg --print-architecture).tar.gz | tar -xz supabase && `+
-					`install -m 0755 /tmp/supabase /usr/local/bin/supabase && rm -f /tmp/supabase`)
+				if _, err := remote(t, `cd /tmp && curl -fsSL https://github.com/supabase/cli/releases/latest/download/supabase_linux_$(dpkg --print-architecture).tar.gz | tar -xz supabase`); err != nil {
+					return err
+				}
+				_, err := remoteRoot(t, `install -m 0755 /tmp/supabase /usr/local/bin/supabase && rm -f /tmp/supabase`)
 				return err
 			},
 		},
@@ -120,10 +174,19 @@ apt-get update -qq && apt-get install -y -qq `+pkgs)
 				// itself. Ending with `command -v claude` would not do: that
 				// runs with the tool PATH set and reports success even when
 				// the symlink was never made.
-				_, err := remote(t, `curl -fsSL https://claude.ai/install.sh | bash || true
+				// The installer must run as the ssh user: it writes into
+				// $HOME/.local/bin, and under sudo that becomes root's home —
+				// where the service, running as this user, could not read it.
+				// Only the link onto the default PATH needs root.
+				out, err := remote(t, `curl -fsSL https://claude.ai/install.sh | bash || true
 src=$(command -v claude 2>/dev/null || true)
 if [ -z "$src" ]; then echo "claude is not on PATH after install" >&2; exit 1; fi
-ln -sf "$src" /usr/local/bin/claude
+echo "$src"`)
+				if err != nil {
+					return err
+				}
+				src := lastLine(out)
+				_, err = remoteRoot(t, `ln -sf `+shq(src)+` /usr/local/bin/claude
 test -x /usr/local/bin/claude`)
 				return err
 			},
@@ -172,10 +235,14 @@ func InstallCBX(t Target, localBinary string) error {
 	if err := checkELF(localBinary); err != nil {
 		return err
 	}
-	if err := Upload(t, localBinary, "/usr/local/bin/cbx"); err != nil {
+	// Via /tmp: scp authenticates as the ssh user, who cannot write
+	// /usr/local/bin. The install is the privileged half.
+	if err := Upload(t, localBinary, "/tmp/cbx.upload"); err != nil {
 		return err
 	}
-	_, err = Run(t, "chmod +x /usr/local/bin/cbx")
+	_, err = remoteRoot(t, `install -m 0755 /tmp/cbx.upload /usr/local/bin/cbx
+rm -f /tmp/cbx.upload
+test -x /usr/local/bin/cbx`)
 	return err
 }
 
@@ -215,13 +282,16 @@ case "$arch" in
   *) echo "no released cbx for architecture $arch" >&2; exit 1 ;;
 esac
 url="%s/%s/cbx-linux-$arch"
-curl -fsSL "$url" -o /tmp/cbx.download
-install -m 0755 /tmp/cbx.download /usr/local/bin/cbx
-rm -f /tmp/cbx.download
-test -x /usr/local/bin/cbx
-/usr/local/bin/cbx --version`, ReleaseRepo, path))
+curl -fsSL "$url" -o /tmp/cbx.download`, ReleaseRepo, path))
 	if err != nil {
 		return "", fmt.Errorf("download cbx: %w", err)
+	}
+	out, err = remoteRoot(t, `install -m 0755 /tmp/cbx.download /usr/local/bin/cbx
+rm -f /tmp/cbx.download
+test -x /usr/local/bin/cbx
+/usr/local/bin/cbx --version`)
+	if err != nil {
+		return "", fmt.Errorf("install cbx: %w", err)
 	}
 	// Reported by the binary itself, so what is printed is what is installed
 	// rather than what was asked for.

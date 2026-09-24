@@ -34,9 +34,11 @@ func CloudflaredStep() Step {
 		Name:  "cloudflared",
 		Check: func(t Target) bool { return onDefaultPath(t, "cloudflared") },
 		Do: func(t Target) error {
-			_, err := remote(t, `arch=$(dpkg --print-architecture)
-curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}" -o /tmp/cloudflared
-install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
+			if _, err := remote(t, `arch=$(dpkg --print-architecture)
+curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}" -o /tmp/cloudflared`); err != nil {
+				return err
+			}
+			_, err := remoteRoot(t, `install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
 rm -f /tmp/cloudflared
 test -x /usr/local/bin/cloudflared`)
 			return err
@@ -70,12 +72,15 @@ func InstallTunnel(t Target, addr string) error {
 		return err
 	}
 	tmp.Close()
-	if err := Upload(t, tmp.Name(), TunnelUnitPath); err != nil {
+	if err := Upload(t, tmp.Name(), "/tmp/cbx-tunnel.service"); err != nil {
 		return err
+	}
+	if _, err := remoteRoot(t, "install -m 0644 /tmp/cbx-tunnel.service "+shq(TunnelUnitPath)+" && rm -f /tmp/cbx-tunnel.service"); err != nil {
+		return fmt.Errorf("write the tunnel unit: %w", err)
 	}
 	// Restarted rather than merely started: re-exposing a box that already has
 	// a tunnel should issue a fresh URL rather than silently keep the old one.
-	if _, err := remote(t, "systemctl daemon-reload && systemctl enable cbx-tunnel && systemctl restart cbx-tunnel"); err != nil {
+	if _, err := remoteRoot(t, "systemctl daemon-reload && systemctl enable cbx-tunnel && systemctl restart cbx-tunnel"); err != nil {
 		return fmt.Errorf("start the tunnel: %w", err)
 	}
 	return nil
